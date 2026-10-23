@@ -1,0 +1,2 @@
+# The scripts in ci/ and e2e/ run from the repository root.
+source-path=SCRIPTDIR/..

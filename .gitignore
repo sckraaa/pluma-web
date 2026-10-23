@@ -1,0 +1,6 @@
+/upstream/
+/out/
+/.e2e/
+/.pnpm-store/
+/e2e/node_modules/
+__pycache__/
