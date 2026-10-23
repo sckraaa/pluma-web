@@ -1,0 +1,10 @@
+{
+  "name": "pluma-web-e2e",
+  "private": true,
+  "description": "Signs in to a local Pluma stand with the web client (e2e/run.sh)",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}
