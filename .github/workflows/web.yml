@@ -1,0 +1,106 @@
+# Builds the Pluma web client (Telegram Web K) from the upstream commit
+# upstream.env pins.
+#
+#   check  the patch script's tests, on the pinned upstream too (the patch
+#          applies, and damage to any of its places stops it), and the shell
+#          scripts' lint;
+#   build  fetch, patch, typecheck and bundle (the pnpm store in the GitHub
+#          Actions cache), check the bundle for traces of Telegram's servers,
+#          and the archive of the site with its SHA-256.
+#
+# The site is not encrypted: it is the static content the server's web site
+# serves to anyone anyway (README).
+#
+# The weekly run is a canary: it builds the pinned upstream on a fresh runner
+# image, so a broken toolchain or dependency shows up before an update is
+# needed.
+name: web
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Fetch upstream
+        run: ci/fetch-upstream.sh
+      - name: Patch script tests
+        run: python3 -I ci/patch_test.py -v
+      - name: Shell scripts
+        run: shellcheck -x ci/*.sh e2e/*.sh
+
+  build:
+    needs: check
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      pnpm_config_store_dir: ${{ github.workspace }}/.pnpm-store
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Toolchain of upstream.env
+        id: toolchain
+        run: |
+          . ./upstream.env
+          echo "node=$NODE_VERSION" >>"$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.toolchain.outputs.node }}
+          package-manager-cache: false
+      - name: pnpm
+        run: ci/setup.sh
+      - name: Fetch upstream
+        run: ci/fetch-upstream.sh
+      - name: Patch
+        id: configure
+        env:
+          SERVER_URL: ${{ vars.PLUMA_SERVER_URL }}
+          RSA_PUBLIC_KEY: ${{ vars.PLUMA_RSA_PUBLIC_KEY }}
+        run: ci/configure.sh
+      - name: Restore the pnpm store
+        id: pnpm-store
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('upstream/pnpm-lock.yaml') }}
+          restore-keys: |
+            pnpm-store-${{ runner.os }}-
+      - name: Build
+        id: build
+        env:
+          TARGET: ${{ steps.configure.outputs.target }}
+        run: ci/build.sh "$TARGET"
+      - name: Save the pnpm store
+        if: always() && steps.pnpm-store.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .pnpm-store
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('upstream/pnpm-lock.yaml') }}
+      - name: Upload the site
+        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.build.outputs.site }}
+          path: |
+            out/${{ steps.build.outputs.site }}.tar.gz
+            out/${{ steps.build.outputs.site }}.tar.gz.sha256
+          retention-days: 30
+          if-no-files-found: error

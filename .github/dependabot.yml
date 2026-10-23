@@ -1,0 +1,15 @@
+# Weekly update pull requests for the actions the workflow pins by commit SHA.
+# The upstream commit, Node.js and pnpm are pinned in upstream.env and
+# updated by hand together with ci/patch.py; so is Playwright of e2e/, which
+# only the stand check (e2e/run.sh) uses.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      github-actions:
+        patterns: ["*"]
