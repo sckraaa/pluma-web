@@ -1,8 +1,9 @@
 // Signs in to a Pluma stand with the web client, the way a user does
 // (e2e/run.sh starts the stand, builds the client for it and serves it): a
 // phone on the allowlist, the code pluma-admin issues, sign-up, a message to
-// Saved Messages. Then a second browser signs in to the same account and
-// finds the message there, which only the server can have given it.
+// Saved Messages and a chat folder. Then a second browser signs in to the
+// same account and finds the message and the folder there, which only the
+// server can have given it.
 import {test, expect} from '@playwright/test';
 import {execFileSync} from 'node:child_process';
 import path from 'node:path';
@@ -20,6 +21,8 @@ const PHONE = env('PLUMA_E2E_PHONE');
 const SERVER_DIR = env('PLUMA_SERVER_DIR');
 const SCREENSHOTS = env('PLUMA_E2E_SCREENSHOTS');
 const MESSAGE = `Hello from Pluma web, ${new Date().toISOString()}`;
+// At most 12 characters, as folder titles are.
+const FOLDER = 'Pluma work';
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -131,6 +134,45 @@ async function openSavedMessages(page) {
   await expect(page.locator('#column-center .chat-info .peer-title', {hasText: 'Saved Messages'}).first()).toBeVisible();
 }
 
+// A slider tab of the left column, told apart by what it shows.
+function sidebarTab(page, options) {
+  return page.locator('.sidebar-slider-item', options);
+}
+
+// A chat type of a folder (Contacts, Non-Contacts...) in tab. Its button
+// also holds an icon, so it is found by its exact label.
+function chatType(page, tab, name) {
+  return tab.locator('.folder-category-button').filter({has: page.getByText(name, {exact: true})});
+}
+
+// Creates a folder of the user's contacts in Settings. Web K takes the limits
+// of folders from help.getAppConfig: without them it refuses to create one
+// ("the limit of undefined folders").
+async function createFolder(page) {
+  await page.locator('.left-sidebar-burger').click();
+  await page.locator('.btn-menu-item', {hasText: 'Settings'}).click();
+  // A row takes the click on its ripple, which lies over the row's text.
+  await page.locator('.row-clickable', {hasText: 'Chat Folders'}).click();
+  const folders = sidebarTab(page, {has: page.getByRole('button', {name: 'Create Folder'})});
+  await folders.getByRole('button', {name: 'Create Folder'}).click();
+
+  const edit = sidebarTab(page, {has: page.locator('.sidebar-header__title', {hasText: 'New Folder'})});
+  await edit.locator('.input-field', {hasText: 'Folder name'}).locator('.input-field-input').focus();
+  await page.keyboard.type(FOLDER);
+  await edit.getByRole('button', {name: 'Add Chats'}).click();
+
+  const chats = sidebarTab(page, {hasText: 'Chat types'});
+  await chatType(page, chats, 'Contacts').click();
+  await chats.locator('.btn-confirm').click();
+  await expect(chatType(page, edit, 'Contacts')).toBeVisible();
+
+  // The tab closes once the server has saved the folder; a refusal keeps it
+  // open or shows the limit.
+  await edit.locator('.btn-confirm').click();
+  await expect(edit).toHaveCount(0);
+  await expect(folders.getByText(FOLDER, {exact: true})).toBeVisible();
+}
+
 test('sign in, sign up and keep a message in Saved Messages', async({browser}) => {
   const requests = {local: 0, foreign: new Set()};
 
@@ -151,6 +193,8 @@ test('sign in, sign up and keep a message in Saved Messages', async({browser}) =
     await expect(bubble).toHaveClass(/\bis-(sent|read)\b/);
     await expect(bubble).not.toHaveClass(/\bis-(outgoing|sending|error)\b/);
   });
+
+  await step(page, 'Create a folder', () => createFolder(page));
   await first.close();
 
   // A fresh browser has nothing stored: the message can only come from the
@@ -162,6 +206,10 @@ test('sign in, sign up and keep a message in Saved Messages', async({browser}) =
   await step(again, 'The message is in Saved Messages', async() => {
     await openSavedMessages(again);
     await expect(again.locator('.bubble', {hasText: MESSAGE})).toBeVisible();
+  });
+
+  await step(again, 'The folder is there', async() => {
+    await expect(again.getByText(FOLDER, {exact: true}).first()).toBeVisible();
   });
   await second.close();
 

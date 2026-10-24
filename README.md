@@ -102,7 +102,7 @@ The patch applies to a fresh checkout only: to patch again, fetch the upstream a
 PLUMA_SERVER_DIR=~/pluma e2e/run.sh
 ```
 
-It starts the server's e2e stand with its own throwaway key, builds the client for that stand and serves it on `localhost`. A phone on the allowlist signs in with the code from `pluma-admin`, signs up and sends a message to Saved Messages; a second browser signs in to the same account and must find the message, which only the server can have given it. The browser resolves no host name but `localhost`, and any request elsewhere fails the run. Screenshots of every step go to `.e2e/screenshots`; the stand and the browser's files are removed at the end.
+It starts the server's e2e stand with its own throwaway key, builds the client for that stand and serves it on `localhost`. A phone on the allowlist signs in with the code from `pluma-admin`, signs up, sends a message to Saved Messages and creates a chat folder; a second browser signs in to the same account and must find the message and the folder, which only the server can have given it. Web K takes the folder limits from the server's `help.getAppConfig`: without them it creates no folder. The browser resolves no host name but `localhost`, and any request elsewhere fails the run. Screenshots of every step go to `.e2e/screenshots`; the stand and the browser's files are removed at the end.
 
 To try the development build by hand, start the stand with the development key and the gateway's WebSocket port on 11443 (`docs/ops/clients.md` of the server repository), serve `out/pluma-web-<version>-dev/` on `localhost` (e.g. `python3 -m http.server --bind 127.0.0.1 --directory out/pluma-web-2.2-676-dev 8080`) and open it.
 

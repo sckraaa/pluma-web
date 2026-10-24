@@ -7,8 +7,9 @@
 # Starts the e2e stand of the server checkout (its test/e2e/run.sh) with the
 # gateway's WebSocket port on 127.0.0.1, builds the client for the stand's
 # throwaway key, serves it on 127.0.0.1 and runs the scenario: a phone on the
-# allowlist signs in with the code from pluma-admin, signs up and sends a
-# message to Saved Messages; a second browser signs in and finds the message.
+# allowlist signs in with the code from pluma-admin, signs up, sends a
+# message to Saved Messages and creates a chat folder; a second browser signs
+# in and finds the message and the folder.
 # Screenshots of the steps go to .e2e/screenshots (and, if the run fails, the
 # stand's logs to .e2e/logs); the stand and the browser's files are removed
 # at the end.

@@ -17,6 +17,9 @@ export default defineConfig({
     ...devices['Desktop Chrome'],
     headless: true,
     locale: 'en-US',
+    // A click the page never takes fails with what is in the way, not with
+    // the test's timeout.
+    actionTimeout: 30_000,
     trace: 'off',
     screenshot: 'off',
     video: 'off',
