@@ -420,10 +420,10 @@ def patch_manifest(tree, rel, c):
 
 # --- the brand -----------------------------------------------------------------
 #
-# Pluma's name, icons and logos instead of Telegram's (task 017 of the
-# server repository). What the user sees changes; keys, identifiers, file
-# names, storage, the mini-app API (window.Telegram) and the URLs of
-# Telegram's sites stay as they are.
+# Pluma's name, icons and link scheme instead of Telegram's (task 017 of
+# the server repository). What the user sees and the links the client
+# makes change; keys, identifiers, file names, storage, the mini-app API
+# (window.Telegram) and the URLs of Telegram's sites stay as they are.
 
 # Where the footer of the menu points: the source of this build (GPL).
 SOURCE_URL = "https://github.com/sckraaa/pluma-web"
@@ -481,6 +481,22 @@ STRINGS = (
 )
 _STRING_ENTRY = re.compile(r"^(\s*'(?:[^'\\]|\\.)*':\s*)(.*)$")
 _TELEGRAM_WORD = re.compile(r"(?:(?<![\w./@-])|(?<=\\n))Telegram(?!\w)")
+
+# The link scheme: Pluma's apps speak plm://, so that tg:// stays with
+# Telegram's apps installed beside them, and a QR code of one signs in only
+# Pluma's. The links the client makes: (file, text, occurrences); wrapUrl
+# reads plm: links (rebrand) and gives them to the same handlers (tg_*).
+PLM_LINKS = (
+    ("src/pages/cards/SignQRCard.tsx", "'tg://login?token='", 1),
+    ("src/components/instantView.tsx", "'tg://iv?url='", 2),
+    ("src/lib/richTextProcessor/wrapTelegramRichText.ts", "'tg://iv?url='", 1),
+    ("src/components/wrappers/joinVoiceChatAnchor.ts", "`tg://voicechat?", 1),
+    ("src/lib/richTextProcessor/wrapRichText.ts", "'tg://bot_command?", 1),
+    ("src/lib/richTextProcessor/index.ts", "'tg://search_hashtag?", 1),
+    ("src/lib/settingsSearch/link.ts", "'tg://settings'", 1),
+)
+_TG_LINK = re.compile(r"['\"`]tg:|\^tg:")
+_COMMENT = re.compile(r"/\*.*?\*/|(?<![:\\])//[^\n]*", re.S)
 
 # The accent of the light theme (the dark one's is #9dbb9f): the Windows
 # tile and the unread count drawn over the favicon.
@@ -606,6 +622,13 @@ def rebrand(tree, c):
                  "    }, {\n"
                  "      // pluma: no \"Telegram Features\" (t.me/TelegramTips) and \"Report Bug\"\n"
                  "      // (bugs.telegram.org): Telegram's own services.\n")
+
+    # The link scheme.
+    for rel, text, count in PLM_LINKS:
+        tree.replace(rel, text, text.replace("tg:", "plm:"), count)
+    tree.replace("src/lib/richTextProcessor/wrapUrl.ts",
+                 "  } else if((tgMatch = url.match(/^tg:(?:\\/\\/)?(.+?)(?:\\?|$)/))) {\n",
+                 "  } else if((tgMatch = url.match(/^plm:(?:\\/\\/)?(.+?)(?:\\?|$)/))) { // pluma: plm://, not tg://\n")
 
 
 def patch(tree, c):
@@ -756,7 +779,7 @@ def patch(tree, c):
     for rel in ("public/site.webmanifest", "public/site_apple.webmanifest"):
         patch_manifest(tree, rel, c)
 
-    # Pluma's name, icons and logos.
+    # Pluma's name, icons and link scheme.
     rebrand(tree, c)
 
 
@@ -794,7 +817,7 @@ def verify(tree, c):
     if env != TRANSPORT_FLAGS:
         raise PatchError(f".env.production.local: {env}, expected {TRANSPORT_FLAGS}")
 
-    # The brand: Pluma's icons, no Telegram in the strings.
+    # The brand: Pluma's icons, no Telegram in the strings, plm:// links.
     for rel, _ in ICONS:
         if tree.sha256("public/" + rel) != hashlib.sha256((BRAND / "web" / rel).read_bytes()).hexdigest():
             raise PatchError(f"public/{rel}: not Pluma's (brand/web)")
@@ -805,6 +828,12 @@ def verify(tree, c):
             m = _STRING_ENTRY.match(line)
             if m and _TELEGRAM_WORD.search(m.group(2)):
                 raise PatchError(f"{rel}: {m.group(2)[:60]!r} still says Telegram")
+    for rel, text in sources.items():
+        m = _TG_LINK.search(_COMMENT.sub("", text))
+        if m:
+            raise PatchError(f"{rel}: a tg: link ({m.group()!r}); Pluma's links are plm://")
+    if "'plm://login?token='" not in sources["src/pages/cards/SignQRCard.tsx"]:
+        raise PatchError("SignQRCard.tsx: the QR code does not sign in with plm://login")
     if '<g id="logo"' not in sources["index.html"]:
         raise PatchError("index.html: not Pluma's logo on the sign-in page")
 

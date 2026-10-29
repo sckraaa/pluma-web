@@ -351,6 +351,13 @@ DAMAGE = (
      "first_name: 'Telegram Notifications',\n        phone: '42777'"),
     ("src/lib/serviceWorker/push.ts", "showNotification('Telegram Web', {", "showNotification('Telegram Web K', {"),
     ("src/lib/serviceWorker/push.ts", "    title = 'Telegram';\n", "    title = 'Telegram Web';\n"),
+    # The link scheme, and a tg:// link the patch does not know.
+    ("src/pages/cards/SignQRCard.tsx", "'tg://login?token='", "'tg://login/?token='"),
+    ("src/components/instantView.tsx", "wrapUrl('tg://iv?url='", "wrapUrl('tg://iv/?url='"),
+    ("src/lib/settingsSearch/link.ts", "const PREFIX = 'tg://settings';", "const PREFIX = 'tg://settings/';"),
+    ("src/lib/richTextProcessor/wrapUrl.ts", "url.match(/^tg:(?:\\/\\/)?(.+?)", "url.match(/^tg:(?:\\/\\/)(.+?)"),
+    ("src/lib/richTextProcessor/wrapUrl.ts", "export default function wrapUrl(",
+     "export const RESOLVE = 'tg://resolve';\nexport default function wrapUrl("),
 )
 
 
@@ -474,6 +481,9 @@ class UpstreamTest(unittest.TestCase):
             self.assertIn(s, lang)
         self.assertIn("t.textContent = `Pluma Web ${App.version} (${App.build})`;", tree.read(SIDEBAR))
         self.assertNotIn("'ReportBug'", tree.read(SIDEBAR))
+        self.assertIn("const url = 'plm://login?token=' +", tree.read("src/pages/cards/SignQRCard.tsx"))
+        self.assertIn("url.match(/^plm:(?:\\/\\/)?(.+?)(?:\\?|$)/)", tree.read("src/lib/richTextProcessor/wrapUrl.ts"))
+        self.assertIn("const PREFIX = 'plm://settings';", tree.read("src/lib/settingsSearch/link.ts"))
 
     def test_icon_changed(self):
         # An icon upstream replaced is one Pluma's render was not made for.
@@ -522,7 +532,8 @@ class BundleTest(unittest.TestCase):
                    f"function Re(e){{return Le(e),`{url}`}}var k=[{{modulus:`{modulus}`,exponent:`010001`}}];"
                    f"var s={{API:{{}},layer:228}};var a={{id:10004,hash:`{api_hash}`}};"
                    "var m={multipleTransports:!1};var t=`https://t.me/`+n;"
-                   "var l={\"Login.Title\":`Sign in to Pluma`};")
+                   "var l={\"Login.Title\":`Sign in to Pluma`};"
+                   "var q=`plm://login?token=`+o;")
         self.write("index.worker-abc.js.map", json.dumps({"sourcesContent": ["// see https://web.telegram.org/a/"]}))
         self.write("assets/img/logo.png", b"\x89PNG\r\n\x1a\n\x00\x01")
         for rel, _ in patch.ICONS:
@@ -560,6 +571,7 @@ class BundleTest(unittest.TestCase):
             ("assets/img/favicon.ico", b"\x00\x00\x01\x00\x01\x00"),
             (patch.SCREENSHOT[0], b"\xff\xd8\xff\xe0"),
             ("h.js", "var l={\"Login.Title\":`Sign in to Telegram`};"),
+            ("i.js", "var q=`tg://login?token=`+o;"),
         ):
             with self.subTest(rel=rel):
                 self.tearDown()
@@ -571,7 +583,8 @@ class BundleTest(unittest.TestCase):
     def test_rejects_missing(self):
         code = (self.site / "index.worker-abc.js").read_text()
         for gone in (self.record["server_url"], self.record["modulus"], self.record["api_hash"], "layer:228",
-                     "Sign in to Pluma"):
+                     "Sign in to Pluma",
+                     "plm://login?token="):
             with self.subTest(gone=gone[:30]):
                 self.write("index.worker-abc.js", code.replace(gone, "x"))
                 with self.assertRaises(patch.PatchError):
