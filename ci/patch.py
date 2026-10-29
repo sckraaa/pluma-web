@@ -284,6 +284,23 @@ class Tree:
                 raise PatchError(f"{rel}: the replaced block has no {s!r}; upstream changed it")
         self.write(rel, text[:start] + block + text[end + len(tail):])
 
+    def replace_within(self, rel, head, tail, edits):
+        """Makes the edits ((old, new, count), ...) between head and the first
+        tail after it, where each old occurs count times."""
+        text = self.read(rel)
+        if text.count(head) != 1:
+            raise PatchError(f"{rel}: {text.count(head)} occurrences of {head!r}, expected 1")
+        start = text.index(head) + len(head)
+        end = text.find(tail, start)
+        if end < 0:
+            raise PatchError(f"{rel}: no {tail!r} after {head!r}")
+        body = text[start:end]
+        for old, new, count in edits:
+            if body.count(old) != count:
+                raise PatchError(f"{rel}: {body.count(old)} occurrences of {old!r} after {head!r}, expected {count}")
+            body = body.replace(old, new)
+        self.write(rel, text[:start] + body + text[end:])
+
     def expect(self, rel, text, count=1):
         """Checks that text the patch relies on is there as it was."""
         found = self.read(rel).count(text)
@@ -420,10 +437,10 @@ def patch_manifest(tree, rel, c):
 
 # --- the brand -----------------------------------------------------------------
 #
-# Pluma's name, icons and link scheme instead of Telegram's (task 017 of
-# the server repository). What the user sees and the links the client
-# makes change; keys, identifiers, file names, storage, the mini-app API
-# (window.Telegram) and the URLs of Telegram's sites stay as they are.
+# Pluma's name, icons, link scheme and colours instead of Telegram's (task
+# 017 of the server repository). What the user sees and the links the
+# client makes change; keys, identifiers, file names, storage, the mini-app
+# API (window.Telegram) and the URLs of Telegram's sites stay as they are.
 
 # Where the footer of the menu points: the source of this build (GPL).
 SOURCE_URL = "https://github.com/sckraaa/pluma-web"
@@ -501,6 +518,132 @@ _COMMENT = re.compile(r"/\*.*?\*/|(?<![:\\])//[^\n]*", re.S)
 # The accent of the light theme (the dark one's is #9dbb9f): the Windows
 # tile and the unread count drawn over the favicon.
 ACCENT = "#5b7a5e"
+
+# The colours of the default light (day) and dark (night) themes, "graphite
+# and sage": (colour, upstream's, Pluma's). The light, dark-blue and
+# accent presets the user picks stay as upstream has them.
+THEME_COLORS = {
+    "day": (
+        ("primary-color", "#3390ec", "#5b7a5e"),
+        ("message-out-primary-color", "#5CA853", "#5b7a5e"),
+        ("message-background-color", "#ffffff", "#f1f2f0"),
+        ("primary-text-color", "#000000", "#111111"),
+        ("secondary-text-color", "#707579", "#6b6f6b"),
+        ("saved-color", "#359AD4", "#5b7a5e"),
+        ("background-color", "#f4f4f5", "#f4f5f4"),
+        ("border-color", "#dfe1e5", "#dfe2df"),
+        ("secondary-color", "#c4c9cc", "#c4c9c4"),
+        ("link-color", "#00488f", "#4f6e52"),
+    ),
+    "night": (
+        ("primary-color", "#8774E1", "#9dbb9f"),
+        ("message-out-primary-color", "#8774E1", "#b2ceb4"),
+        ("message-background-color", "#212121", "#232623"),
+        ("surface-color", "#212121", "#131513"),
+        ("primary-text-color", "#ffffff", "#e8ece8"),
+        ("secondary-text-color", "#aaaaaa", "#9aa29a"),
+        ("saved-color", "#8774E1", "#9dbb9f"),
+        ("background-color", "#181818", "#0c0e0c"),
+        ("body-background-color", "#181818", "#0c0e0c"),
+        ("border-color", "#0f0f0f", "#070807"),
+        ("secondary-color", "#707579", "#6e756e"),
+        ("link-color", "#8774E1", "#b2ceb4"),
+        ("input-search-background-color", "#181818", "#0c0e0c"),
+    ),
+}
+
+# The default themes' settings (state.ts): the accent, the outgoing bubble
+# (Web K draws no gradient: the first colour of the palette's), its time and
+# checks (outbox accent), and the wallpaper's gradient, sage instead of
+# Telegram's green and purple-blue; (Telegram's, Pluma's).
+THEME_SETTINGS = (
+    ("    accent_color: 0x3390ec,\n    message_colors: [0x5CA853],\n",
+     "    // pluma: graphite and sage.\n"
+     "    accent_color: 0x5B7A5E,\n    message_colors: [0xE3EAE2],\n    outbox_accent_color: 0x5B7A5E,\n"),
+    ("        background_color: 0xdbddbb,\n        second_background_color: 0x6ba587,\n"
+     "        third_background_color: 0xd5d88d,\n        fourth_background_color: 0x88b884\n",
+     "        background_color: 0xd5ddd3,\n        second_background_color: 0x8fa992,\n"
+     "        third_background_color: 0xc9d4c5,\n        fourth_background_color: 0xa3b8a4\n"),
+    ("    accent_color: 0x8774E1,\n    message_colors: [0x8774E1],\n",
+     "    // pluma: graphite and sage.\n"
+     "    accent_color: 0x9DBB9F,\n    message_colors: [0x2C3A2D],\n    outbox_accent_color: 0xB2CEB4,\n"),
+    ("        background_color: 0xfec496,\n        second_background_color: 0xdd6cb9,\n"
+     "        third_background_color: 0x962fbf,\n        fourth_background_color: 0x4f5bd5\n",
+     "        background_color: 0x9dbb9f,\n        second_background_color: 0x4f6e52,\n"
+     "        third_background_color: 0x7fa082,\n        fourth_background_color: 0x5b7a5e\n"),
+    # What the wallpapers' average gives (highlightingColor), until the
+    # client computes it: service messages, and the title bar of the
+    # installed app on a desktop.
+    ("  baseThemeClassic: 'hsla(86.4, 43.846153%, 45.117647%, .4)',\n"
+     "  baseThemeNight: 'hsla(299.142857, 44.166666%, 37.470588%, .4)',\n",
+     "  baseThemeClassic: 'hsla(120, 26.503759%, 48.049019%, .4)',\n"
+     "  baseThemeNight: 'hsla(123.870967, 26.115537%, 33.009803%, .4)',\n"),
+)
+
+# White text and icons on an accent fill. The dark theme's accent is a light
+# sage, so they take --on-primary-color, which themeController sets from
+# the accent: dark on a light one, white on the others. (file, rule): the
+# one colour declaration in each changes.
+ON_PRIMARY = (
+    ("src/scss/partials/_button.scss",
+     ".btn-color-primary {\n" "  background: var(--primary-color);\n" "  color: #fff;\n"),
+    ("src/scss/partials/_button.scss",
+     "  background-color: var(--primary-color);\n" "  text-align: center;\n" "  font-size: 1.5rem;\n"
+     "  color: #fff;\n"),
+    ("src/scss/partials/_button.scss",
+     "      background-color: var(--primary-color);\n" "      color: #fff;\n" "      padding: .125rem .3125rem;\n"),
+    ("src/scss/partials/_row.scss",
+     "      background-color: var(--primary-color);\n" "      color: #fff;\n" "      padding: .1875rem .3125rem;\n"),
+    ("src/scss/partials/_chat.scss",
+     "\t.btn-send {\n" "    color: #fff !important;\n" "    background-color: var(--primary-color) !important;\n"),
+    ("src/scss/partials/_chat.scss",
+     "      background-color: var(--primary-color);\n" "      display: flex;\n" "      align-items: center;\n"
+     "      padding: 0 .75rem;\n" "      // justify-content: center;\n"
+     "      margin-inline-start: var(--commands-margin-left);\n" "      cursor: pointer;\n" "      color: #fff;\n"),
+    ("src/scss/partials/_chat.scss",
+     "        background-color: var(--primary-color);\n" "        font-size: 1.375rem;\n" "        color: #fff;\n"),
+    ("src/scss/partials/_chatInlineHelper.scss",
+     "          &.empty {\n" "            color: #fff;\n" "            text-transform: uppercase;\n"
+     "            font-size: 1.75rem;\n" "            background-color: var(--primary-color);\n"),
+    ("src/scss/partials/_chatMarkupTooltip.scss",
+     "\t\t&.active {\n" "\t\t\tcolor: #fff !important;\n" "\t\t\tbackground-color: var(--primary-color) !important;\n"),
+    ("src/scss/partials/_chatPinned.scss",
+     "    background-color: var(--primary-color);\n" "    color: #fff;\n" "    border: none;\n"),
+    ("src/scss/partials/_checkbox.scss",
+     "      use {\n" "        stroke: #fff;\n"),
+    ("src/scss/partials/_poll.scss",
+     "        color: #fff;\n" "        background: var(--primary-color);\n"),
+    ("src/scss/partials/_replyKeyboard.scss",
+     "        background-color: var(--primary-color);\n" "        color: #fff !important;\n"),
+    ("src/scss/partials/_searchSuper.scss",
+     "        color: #fff;\n" "        text-transform: uppercase;\n" "        background-color: var(--primary-color);\n"),
+    ("src/scss/partials/_topbarSearch.scss",
+     "          background-color: var(--primary-color) !important;\n" "          color: #fff;\n"),
+    ("src/scss/partials/_voiceRecordingPanel.scss",
+     "    background-color: var(--primary-color);\n" "    color: #fff !important;\n"),
+    ("src/scss/partials/_leftSidebar.scss",
+     "      color: var(--badge-text-color) !important;\n"
+     "      background-color: var(--primary-color) !important;\n"),
+    ("src/scss/partials/popups/_datePicker.scss",
+     "        color: var(--badge-text-color) !important;\n"
+     "        background-color: var(--primary-color) !important;\n"),
+    ("src/scss/partials/popups/_datePicker.scss",
+     "      &.active {\n" "        color: var(--badge-text-color);\n" "\n" "        &::before {\n"
+     "          background-color: var(--primary-color) !important;\n"),
+    ("src/scss/partials/popups/_giftPremium.scss",
+     "    background-color: var(--primary-color);\n" "    border-radius: 6px;\n" "    color: #fff;\n"),
+    ("src/components/call/callLogo.module.scss",
+     "  background-color: var(--primary-color);\n" "  color: #fff;\n"),
+    ("src/components/featureDetailsIconSticker.module.scss",
+     "  background-color: var(--primary-color);\n" "\n" "  color: white;\n"),
+    ("src/components/popups/sendGift.module.scss",
+     "  background-color: var(--primary-color);\n" "  color: #fff;\n"),
+    ("src/components/popups/starGiftValue.module.scss",
+     "  background: var(--primary-color);\n" "  color: #fff;\n"),
+    ("src/components/popups/webAppLocationAccess.module.scss",
+     "  background: var(--primary-color);\n" "  color: var(--white);\n"),
+)
+_WHITE_ON_PRIMARY = re.compile(r"(?<![\w-])((?:color|stroke): )(?:#fff|white|var\(--white\)|var\(--badge-text-color\))")
 
 
 def mark_logo():
@@ -629,6 +772,155 @@ def rebrand(tree, c):
     tree.replace("src/lib/richTextProcessor/wrapUrl.ts",
                  "  } else if((tgMatch = url.match(/^tg:(?:\\/\\/)?(.+?)(?:\\?|$)/))) {\n",
                  "  } else if((tgMatch = url.match(/^plm:(?:\\/\\/)?(.+?)(?:\\?|$)/))) { // pluma: plm://, not tg://\n")
+
+    # The colours.
+    theme = "src/helpers/themeController.ts"
+    for base, colors in THEME_COLORS.items():
+        tree.replace_within(theme, f"  {base}: {{\n", "\n  },\n",
+                            [(f"'{key}': '{old}'", f"'{key}': '{new}'", 1) for key, old, new in colors])
+    tree.replace(theme, "'link-color': '#b2ceb4', // SCSS resolves to var(--primary-color)\n",
+                 "'link-color': '#b2ceb4', // pluma: lighter than the accent\n")
+    tree.replace(theme,
+                 "import {changeColorAccent, ColorRgb, getAccentColor, getAverageColor, getRgbColorFromTelegramColor, "
+                 "hexToRgb, hslaStringToHex, hslaStringToRgba, hslaToRgba, hsvToRgb, mixColors, rgbaToHexa, "
+                 "rgbaToHsla, rgbToHsv} from '@helpers/color';\n",
+                 "import {changeColorAccent, ColorRgb, computePerceivedBrightness, getAccentColor, getAverageColor, "
+                 "getRgbColorFromTelegramColor, hexToRgb, hslaStringToHex, hslaStringToRgba, hslaToRgba, hsvToRgb, "
+                 "mixColors, rgbaToHexa, rgbaToHsla, rgbToHsv} from '@helpers/color';\n")
+    tree.replace(theme,
+                 "    applyAppColor({\n"
+                 "      name: 'primary-color',\n"
+                 "      hex: newAccentHex,\n"
+                 "      darkenAlpha: 0.04\n"
+                 "    });\n",
+                 "    applyAppColor({\n"
+                 "      name: 'primary-color',\n"
+                 "      hex: newAccentHex,\n"
+                 "      darkenAlpha: 0.04\n"
+                 "    });\n"
+                 "\n"
+                 "    // pluma: what sits on an accent fill (buttons, badges, the selected\n"
+                 "    // chat): dark on a light accent such as the dark theme's sage, white\n"
+                 "    // on the others.\n"
+                 "    element.style.setProperty('--on-primary-color', "
+                 "computePerceivedBrightness(newAccentRgb) > .65 ? '#131513' : '#ffffff');\n")
+    tree.replace(theme,
+                 "    let newMessageOutBackgroundColor = mixColors(myMessagesAccent, surfaceForMessage, messageLightenAlpha);\n"
+                 "\n"
+                 "    if(!isNight/*  || true */) {\n",
+                 "    // pluma: a light, muted message colour (the sage of Pluma's light\n"
+                 "    // theme) is the bubble as it is: mixed into the surface and saturated\n"
+                 "    // by 63 points, it would turn bright green.\n"
+                 "    const myMessagesHsla = rgbaToHsla(...myMessagesAccent);\n"
+                 "    const isBubbleColor = !isNight && myMessagesHsla.l >= 85 && myMessagesHsla.s <= 30;\n"
+                 "    let newMessageOutBackgroundColor = isBubbleColor ?\n"
+                 "      myMessagesAccent :\n"
+                 "      mixColors(myMessagesAccent, surfaceForMessage, messageLightenAlpha);\n"
+                 "\n"
+                 "    if(!isNight && !isBubbleColor) {\n")
+    tree.replace(theme,
+                 "      hex: isNight ? '#ffffff' : rgbaToHexa(accentColor2 ? hsvToRgb(...accentColor2) : myMessagesAccent),\n",
+                 "      // pluma: the outbox accent colours the time and checks of a dark theme too.\n"
+                 "      hex: accentColor2 ? rgbaToHexa(hsvToRgb(...accentColor2)) : "
+                 "(isNight ? '#ffffff' : rgbaToHexa(myMessagesAccent)),\n")
+    for old, new in THEME_SETTINGS:
+        tree.replace("src/config/state.ts", old, new)
+    # Settings saved by a build before Pluma's colours keep Telegram's
+    # defaults, which the theme does not reset by itself.
+    load = "src/lib/appManagers/utils/state/loadState.ts"
+    tree.replace(load,
+                 "import {CommonState as StateCommon, State, COMMON_STATE_INIT, STATE_INIT, AppTheme} from '@config/state';\n",
+                 "import {CommonState as StateCommon, State, COMMON_STATE_INIT, STATE_INIT, AppTheme, SETTINGS_INIT} "
+                 "from '@config/state';\n")
+    tree.replace(load,
+                 "        theme.settings = [theme.settings as any];\n"
+                 "        migrated = true;\n"
+                 "      }\n"
+                 "    });\n",
+                 "        theme.settings = [theme.settings as any];\n"
+                 "        migrated = true;\n"
+                 "      }\n"
+                 "    });\n"
+                 "    // pluma: themes saved by a build before Pluma's colours keep Telegram's\n"
+                 "    // default accent, bubbles and wallpaper; they get Pluma's.\n"
+                 "    const telegramDefaults: {[base: string]: {accent: number, message: number, wallpaper: number}} = {\n"
+                 "      baseThemeClassic: {accent: 0x3390ec, message: 0x5CA853, wallpaper: 0xdbddbb},\n"
+                 "      baseThemeNight: {accent: 0x8774E1, message: 0x8774E1, wallpaper: 0xfec496}\n"
+                 "    };\n"
+                 "    themes.forEach((theme) => {\n"
+                 "      theme.settings?.forEach((settings) => {\n"
+                 "        const telegram = telegramDefaults[settings.base_theme?._];\n"
+                 "        const pluma = SETTINGS_INIT.themes[0].settings.find((s) => s.base_theme._ === settings.base_theme?._);\n"
+                 "        if(!telegram || !pluma) return;\n"
+                 "        if(settings.accent_color === telegram.accent && settings.message_colors?.length === 1 &&\n"
+                 "          settings.message_colors[0] === telegram.message) {\n"
+                 "          settings.accent_color = pluma.accent_color;\n"
+                 "          settings.message_colors = copy(pluma.message_colors);\n"
+                 "          settings.outbox_accent_color = pluma.outbox_accent_color;\n"
+                 "          migrated = true;\n"
+                 "        }\n"
+                 "        if(settings.wallpaper?.id === '' && settings.wallpaper.settings?.background_color === telegram.wallpaper) {\n"
+                 "          settings.wallpaper = copy(pluma.wallpaper);\n"
+                 "          settings.highlightingColor = pluma.highlightingColor;\n"
+                 "          migrated = true;\n"
+                 "        }\n"
+                 "      });\n"
+                 "    });\n")
+    tree.replace("src/helpers/rowIconBackground.ts", "  blue: '#2196F3',\n", f"  blue: '{ACCENT}', // pluma: the accent, not blue\n")
+
+    base = "src/scss/base.scss"
+    tree.replace(base, "  --badge-text-color: #fff;\n  --original-ripple-color: rgba(0, 0, 0, #{$hover-alpha});\n",
+                 "  --badge-text-color: #fff;\n"
+                 "  // pluma: what sits on an accent fill; themeController sets it per theme.\n"
+                 "  --on-primary-color: #fff;\n"
+                 "  --original-ripple-color: rgba(0, 0, 0, #{$hover-alpha});\n")
+    tree.replace(base, '  @include avatar-color("blue", #5CAFFA, #408ACF);\n',
+                 '  @include avatar-color("blue", #7FA082, #6F8F72); // pluma: sage, not blue\n')
+    tree.replace(base, "  --avatar-color-story-unread-from: #34c76f;\n  --avatar-color-story-unread-to: #3da1fd;\n",
+                 "  // pluma: sage, not green and blue.\n"
+                 "  --avatar-color-story-unread-from: #9DBB9F;\n  --avatar-color-story-unread-to: #5B7A5E;\n")
+    tree.replace(base, "  --message-checkbox-color: #61c642;\n", "  --message-checkbox-color: var(--primary-color); // pluma\n")
+    tree.replace(base,
+                 "  --message-out-link-color: #fff;\n"
+                 "  --message-out-status-color: #fff;\n"
+                 "  --message-out-time-color: rgba(255, 255, 255, .6);\n",
+                 "  // pluma: the outbox accent (white unless a theme has one), as in the day theme.\n"
+                 "  --message-out-link-color: var(--message-out-primary-color);\n"
+                 "  --message-out-status-color: var(--message-out-primary-color);\n"
+                 "  --message-out-time-color: var(--message-out-status-color);\n")
+    for rel, rule in ON_PRIMARY:
+        new, n = _WHITE_ON_PRIMARY.subn(r"\1var(--on-primary-color)", rule)
+        if n != 1:
+            raise PatchError(f"ON_PRIMARY: {rule!r} has {n} colours, expected 1")
+        tree.replace(rel, rule, new)
+    tree.replace("src/scss/partials/_badge.scss",
+                 "  &-primary {\n    background-color: var(--primary-color);\n  }\n",
+                 "  &-primary {\n    background-color: var(--primary-color);\n    color: var(--on-primary-color); // pluma\n  }\n")
+    tree.replace("src/scss/partials/_slider.scss",
+                 "        .badge {\n          background-color: var(--primary-color);\n        }\n",
+                 "        .badge {\n          background-color: var(--primary-color);\n"
+                 "          color: var(--on-primary-color); // pluma\n        }\n")
+    chatlist = "src/scss/partials/_chatlist.scss"
+    tree.replace(chatlist,
+                 "  .is-muted.backwards .dialog-subtitle-badge-pollvote {\n"
+                 "    background-color: var(--chatlist-status-color);\n  }\n",
+                 "  .is-muted.backwards .dialog-subtitle-badge-pollvote {\n"
+                 "    background-color: var(--chatlist-status-color);\n"
+                 "    color: var(--on-primary-color); // pluma\n  }\n")
+    tree.replace(chatlist,
+                 "  .no-unmuted-topic .dialog-subtitle-badge-pollvote {\n"
+                 "    background-color: var(--secondary-color);\n  }\n",
+                 "  .no-unmuted-topic .dialog-subtitle-badge-pollvote {\n"
+                 "    background-color: var(--secondary-color);\n"
+                 "    color: var(--badge-text-color); // pluma\n  }\n")
+    # The selected chat, filled with the accent.
+    tree.replace_within(chatlist, "      &.active {\n        --background: var(--primary-color) !important;\n",
+                        "\n      }\n", (
+                            ("#fff", "var(--on-primary-color)", 9),
+                            ("color: white;", "color: var(--on-primary-color);", 1),
+                            ("rgba(255, 255, 255, .7)", "color-mix(in srgb, var(--on-primary-color) 70%, transparent)", 1),
+                            ("rgba(255, 255, 255, .2)", "color-mix(in srgb, var(--on-primary-color) 20%, transparent)", 1),
+                        ))
 
 
 def patch(tree, c):
@@ -779,7 +1071,7 @@ def patch(tree, c):
     for rel in ("public/site.webmanifest", "public/site_apple.webmanifest"):
         patch_manifest(tree, rel, c)
 
-    # Pluma's name, icons and link scheme.
+    # Pluma's name, icons, link scheme and colours.
     rebrand(tree, c)
 
 

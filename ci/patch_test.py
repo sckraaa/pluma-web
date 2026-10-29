@@ -255,6 +255,16 @@ class TreeTest(unittest.TestCase):
         self.tree.replace_block("a.txt", "void f() {", "\n}\n", "int x;\n", must_contain=("body;",))
         self.assertEqual(self.tree.read("a.txt"), "one two two\nint x;\n")
 
+    def test_replace_within(self):
+        # The region ends at the first tail: "two" twice before it, once in it.
+        self.tree.write("a.txt", "two {\n two two\n}\ntwo\n")
+        with self.assertRaises(patch.PatchError):
+            self.tree.replace_within("a.txt", "two {\n", "\n}", (("two", "2", 3),))
+        with self.assertRaises(patch.PatchError):
+            self.tree.replace_within("a.txt", "three {\n", "\n}", (("two", "2", 2),))
+        self.tree.replace_within("a.txt", "two {\n", "\n}", (("two", "2", 2),))
+        self.assertEqual(self.tree.read("a.txt"), "two {\n 2 2\n}\ntwo\n")
+
     def test_expect(self):
         self.tree.expect("a.txt", "body;")
         self.tree.expect("a.txt", "two", count=2)
@@ -283,7 +293,11 @@ class TreeTest(unittest.TestCase):
 UPSTREAM_PATHS = ("src", "public/version", "public/site.webmanifest", "public/site_apple.webmanifest",
                   "public/browserconfig.xml", "public/assets/img", "package.json", "index.html", "vite.config.ts")
 
+THEME = "src/helpers/themeController.ts"
+STATE = "src/config/state.ts"
 SIDEBAR = "src/components/sidebarLeft/index.ts"
+BASE = "src/scss/base.scss"
+CHATLIST = "src/scss/partials/_chatlist.scss"
 
 DC = "src/lib/mtproto/dcConfigurator.ts"
 RSA = "src/lib/mtproto/rsaKeysManager.ts"
@@ -358,6 +372,40 @@ DAMAGE = (
     ("src/lib/richTextProcessor/wrapUrl.ts", "url.match(/^tg:(?:\\/\\/)?(.+?)", "url.match(/^tg:(?:\\/\\/)(.+?)"),
     ("src/lib/richTextProcessor/wrapUrl.ts", "export default function wrapUrl(",
      "export const RESOLVE = 'tg://resolve';\nexport default function wrapUrl("),
+    # The colours.
+    (THEME, "    'primary-color': '#3390ec',\n", "    'primary-color': '#3390EC',\n"),
+    (THEME, "    'link-color': '#8774E1', // SCSS resolves", "    'link-color': '#8774E1', // resolves"),
+    (THEME, "import {changeColorAccent, ColorRgb, getAccentColor,", "import {changeColorAccent, getAccentColor, ColorRgb,"),
+    (THEME, "      hex: newAccentHex,\n      darkenAlpha: 0.04\n", "      hex: newAccentHex,\n      darkenAlpha: 0.05\n"),
+    (THEME, "    if(!isNight/*  || true */) {\n", "    if(!isNight) {\n"),
+    (THEME, "hex: isNight ? '#ffffff' : rgbaToHexa(", "hex: isNight ? '#fff' : rgbaToHexa("),
+    (STATE, "    accent_color: 0x3390ec,\n", "    accent_color: 0x3390EC,\n"),
+    (STATE, "        fourth_background_color: 0x4f5bd5\n", "        fourth_background_color: 0x4f5bd6\n"),
+    (STATE, "  baseThemeNight: 'hsla(299.142857,", "  baseThemeNight: 'hsla(299.14,"),
+    ("src/lib/appManagers/utils/state/loadState.ts", "STATE_INIT, AppTheme} from '@config/state';",
+     "STATE_INIT, type AppTheme} from '@config/state';"),
+    ("src/lib/appManagers/utils/state/loadState.ts", "        theme.settings = [theme.settings as any];\n",
+     "        theme.settings = [theme.settings];\n"),
+    ("src/helpers/rowIconBackground.ts", "  blue: '#2196F3',", "  blue: '#2196f3',"),
+    (BASE, '@include avatar-color("blue", #5CAFFA, #408ACF);', '@include avatar-color("blue", #5CAFFA, #408ACE);'),
+    (BASE, "--avatar-color-story-unread-to: #3da1fd;", "--avatar-color-story-unread-to: #3DA1FD;"),
+    (BASE, "--message-checkbox-color: #61c642;", "--message-checkbox-color: #61C642;"),
+    (BASE, "--message-out-time-color: rgba(255, 255, 255, .6);", "--message-out-time-color: rgba(255, 255, 255, .5);"),
+    (BASE, "  --badge-text-color: #fff;\n  --original-ripple-color", "  --badge-text-color: white;\n  --original-ripple-color"),
+    ("src/scss/partials/_button.scss", ".btn-color-primary {\n  background: var(--primary-color);\n  color: #fff;",
+     ".btn-color-primary {\n  background: var(--primary-color);\n  color: white;"),
+    ("src/scss/partials/_chat.scss", "    color: #fff !important;\n    background-color: var(--primary-color) !important;",
+     "    background-color: var(--primary-color) !important;\n    color: #fff !important;"),
+    ("src/scss/partials/_checkbox.scss", "        stroke: #fff;\n", "        stroke: white;\n"),
+    ("src/components/popups/webAppLocationAccess.module.scss", "color: var(--white);", "color: #fff;"),
+    ("src/scss/partials/_badge.scss", "  &-primary {\n    background-color: var(--primary-color);\n",
+     "  &-primary {\n    background: var(--primary-color);\n"),
+    ("src/scss/partials/_slider.scss", "        .badge {\n          background-color: var(--primary-color);\n",
+     "        .badge {\n          background: var(--primary-color);\n"),
+    (CHATLIST, "    background-color: var(--chatlist-status-color);\n  }\n",
+     "    background: var(--chatlist-status-color);\n  }\n"),
+    (CHATLIST, "          color: rgba(255, 255, 255, .7);", "          color: rgba(255, 255, 255, .6);"),
+    (CHATLIST, "          --color: #fff;\n", "          --color: white;\n"),
 )
 
 
@@ -484,6 +532,16 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn("const url = 'plm://login?token=' +", tree.read("src/pages/cards/SignQRCard.tsx"))
         self.assertIn("url.match(/^plm:(?:\\/\\/)?(.+?)(?:\\?|$)/)", tree.read("src/lib/richTextProcessor/wrapUrl.ts"))
         self.assertIn("const PREFIX = 'plm://settings';", tree.read("src/lib/settingsSearch/link.ts"))
+        theme = tree.read(THEME)
+        for s in ("'primary-color': '#5b7a5e'", "'primary-color': '#9dbb9f'", "'surface-color': '#131513'",
+                  "element.style.setProperty('--on-primary-color',"):
+            self.assertIn(s, theme)
+        state = tree.read(STATE)
+        self.assertIn("accent_color: 0x5B7A5E,\n    message_colors: [0xE3EAE2],\n    outbox_accent_color: 0x5B7A5E,", state)
+        self.assertIn("accent_color: 0x9DBB9F,\n    message_colors: [0x2C3A2D],\n    outbox_accent_color: 0xB2CEB4,", state)
+        self.assertIn(".btn-color-primary {\n  background: var(--primary-color);\n  color: var(--on-primary-color);",
+                      tree.read("src/scss/partials/_button.scss"))
+        self.assertNotIn("#fff", tree.read(CHATLIST).split("&.active {", 1)[1].split("\n      }\n", 1)[0])
 
     def test_icon_changed(self):
         # An icon upstream replaced is one Pluma's render was not made for.
