@@ -2,7 +2,8 @@
 """Checks the built Pluma web client before it leaves the build.
 
 The site must carry what ci/patch.py applied to the checkout (the server
-URL and key, the api_hash, the layer, the app's name) and no trace of
+URL and key, the api_hash, the layer, the app's name, icons and plm://
+sign-in link) and no trace of
 Telegram's servers: no datacenter address, no MTProto endpoint of
 Telegram's web clients, no server key or credential of Telegram's
 deployments. Every file is read, source maps included: they are published
@@ -78,6 +79,14 @@ def check(site, record, target):
             raise PatchError(f"{rel}: {e}")
         if m.get("name") != name or m.get("short_name") != name:
             raise PatchError(f"{rel}: the app is not named {name}")
+
+    # Pluma's icons and logos, not Telegram's.
+    for rel, _ in patch.ICONS:
+        p = site / rel
+        if not p.is_file() or p.read_bytes() != (patch.BRAND / "web" / rel).read_bytes():
+            raise PatchError(f"{rel}: not Pluma's (brand/web)")
+    if (site / patch.SCREENSHOT[0]).exists():
+        raise PatchError(f"{patch.SCREENSHOT[0]}: Telegram's screenshot is in the site")
     return len(files)
 
 

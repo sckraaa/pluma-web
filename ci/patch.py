@@ -74,6 +74,10 @@ UPSTREAM_FLAGS = ("VITE_MTPROTO_WORKER", "VITE_MTPROTO_SW")
 # What the patch leaves in the checkout for ci/check_bundle.py.
 RECORD = ".pluma-patch.json"
 
+# Pluma's icons and logos: the SVGs of the brand kit (brand/src) and what
+# brand/render.sh renders from them (brand/web, at the paths of public/).
+BRAND = pathlib.Path(__file__).resolve().parent.parent / "brand"
+
 
 class PatchError(Exception):
     pass
@@ -280,6 +284,35 @@ class Tree:
                 raise PatchError(f"{rel}: the replaced block has no {s!r}; upstream changed it")
         self.write(rel, text[:start] + block + text[end + len(tail):])
 
+    def expect(self, rel, text, count=1):
+        """Checks that text the patch relies on is there as it was."""
+        found = self.read(rel).count(text)
+        if found != count:
+            raise PatchError(f"{rel}: {found} occurrences of {text!r}, expected {count}")
+
+    def write_bytes(self, rel, data):
+        (self.root / rel).write_bytes(data)
+
+    def remove(self, rel):
+        (self.root / rel).unlink()
+
+    def sha256(self, rel):
+        p = self.root / rel
+        if not p.is_file():
+            raise PatchError(f"{rel}: missing; upstream changed it")
+        return hashlib.sha256(p.read_bytes()).hexdigest()
+
+    def replace_file(self, rel, sha256, data):
+        """Replaces a file that is the one expected (by its SHA-256); data
+        None removes it."""
+        found = self.sha256(rel)
+        if found != sha256:
+            raise PatchError(f"{rel}: SHA-256 {found}, expected {sha256}; upstream changed it")
+        if data is None:
+            self.remove(rel)
+        else:
+            self.write_bytes(rel, data)
+
     def sources(self):
         """The client's own sources: what the bundle is built from, without
         tests, their mocks and fixtures, and the build scripts."""
@@ -366,8 +399,9 @@ class Config:
 
 
 def patch_manifest(tree, rel, c):
-    """The name of the installed app; no claim on t.me and telegram.me links
-    and no GCM sender id of Telegram's web push."""
+    """The name of the installed app; no claim on t.me and telegram.me links,
+    no GCM sender id of Telegram's web push and no screenshot of Telegram's
+    interface for the install sheet."""
     m = json.loads(tree.read(rel))
     if m.get("name") != "Telegram Web" or m.get("short_name") != "Telegram Web" or "description" not in m:
         raise PatchError(f"{rel}: no name \"Telegram Web\" and description; upstream changed it")
@@ -376,9 +410,113 @@ def patch_manifest(tree, rel, c):
         raise PatchError(f"{rel}: scope_extensions {origins}, expected t.me and telegram.me; upstream changed it")
     if "gcm_sender_id" not in m:
         raise PatchError(f"{rel}: no gcm_sender_id; upstream changed it")
+    screenshots = [s.get("src") for s in m.get("screenshots", [])]
+    if screenshots != [SCREENSHOT[0]]:
+        raise PatchError(f"{rel}: screenshots {screenshots}, expected {SCREENSHOT[0]}; upstream changed it")
     m["name"] = m["short_name"] = m["description"] = c.app_name
-    del m["scope_extensions"], m["gcm_sender_id"]
+    del m["scope_extensions"], m["gcm_sender_id"], m["screenshots"]
     tree.write(rel, json.dumps(m, indent=4, ensure_ascii=False) + "\n")
+
+
+# --- the brand -----------------------------------------------------------------
+#
+# Pluma's icons and logos instead of Telegram's (task 017 of the server
+# repository).
+
+# Pluma's icons and logos (brand/web, rendered from brand/src by
+# brand/render.sh) over Telegram's, file for file: (path in public/, SHA-256
+# of upstream's file). The file names stay: the page, the manifests and the
+# code refer to them.
+ICONS = (
+    ("assets/img/android-chrome-144x144.png", "26de77d7358a970649c4d464f84fcb4792cdd1734b028218e8e6a1eb058eea97"),
+    ("assets/img/android-chrome-192x192.png", "25aa724658da8e71f5cc7c35ccbb43075866af5bed964edb09979caace667b0b"),
+    ("assets/img/android-chrome-256x256.png", "c79b93e9363f51defd6b5553b95eff52fe981224ca59377f6d03e735f0d60047"),
+    ("assets/img/android-chrome-36x36.png", "ab5b4acf3dd5f492328173bff187337e40306d75a1391c6c63d0098836a3e2eb"),
+    ("assets/img/android-chrome-384x384.png", "46b3e824026103c48696e4a38c8c5dcb04bdb5999c1fa22650637812ffc7a51e"),
+    ("assets/img/android-chrome-48x48.png", "d81b6945766e03d375eafd31ad4c133846eadc67ce4a990a09b2443150d664c7"),
+    ("assets/img/android-chrome-512x512.png", "7b5056e3a67bf8af7221fb4150355a0c837c0eef4d7d68a7540a7b4879e9d64a"),
+    ("assets/img/android-chrome-72x72.png", "728cf233c46950970b075e48e43dea0953950d7199239902a3a77cdbdc3105c8"),
+    ("assets/img/android-chrome-96x96.png", "3b81f06abd10b77e6cd1459abebb3ed0f561182cafb3202c5eb60791b75db29d"),
+    ("assets/img/apple-touch-icon-precomposed.png", "565ea1384a3192a5157aaf7778e611b43ffbee16c48eafb1fc125ab7447f5860"),
+    ("assets/img/apple-touch-icon.png", "926cc27874313cb1f3a6fc23d89d98d5cde0e63a3bfd360beb5d02e9c62ea38e"),
+    ("assets/img/favicon-16x16.png", "0d67b7e8ea46e3c959329a0e79a8c8b236187f452edc7049524245e4aa6bee21"),
+    ("assets/img/favicon-194x194.png", "acea3f3abb19dcc93bfa9bdf04ca72c486f2cebb92763b1bc61a597e4af27077"),
+    ("assets/img/favicon-32x32.png", "8e18aee6e70418e31cb2bb69f441ef33083586dd3a5c5d1d335562b840a9ac87"),
+    ("assets/img/favicon.ico", "7e2388ec283fe17472ef02829a93da550af8f3ad4a975f50a0110bff61afe523"),
+    ("assets/img/favicon_unread.ico", "56961b80cb7fb1c6e77c9b1dcf1d995f892e06188f6192732410155ad453edb4"),
+    ("assets/img/icon_square_192.png", "2e56ea0195c439c727e5600fbb176970a538adb90528181364e7958f85cd0710"),
+    ("assets/img/icon_square_384.png", "9b4fa9782486ef7df3c2f26bad6db92ebff7fa680f3e4dcd3fdbb89e140b97e5"),
+    ("assets/img/icon_square_512.png", "b2ae9d5c074651e5b8f046b721c2347e9a1b24c889955f3b53e7fc56b4c2d7ab"),
+    ("assets/img/logo.svg", "99af9dbb97466c5aee7f24d195945670173a53674c6b0c54145b85cfa4de2f9a"),
+    ("assets/img/logo_512.png", "fca7b065e3ec334e6079df22d6d9ff995de72ffa8f22624fefcd0f80b30f9168"),
+    ("assets/img/logo_filled.svg", "f85f2b6f6742602656fecf24cc7db86c688d80d156603812043da8b1dc6f9ac6"),
+    ("assets/img/logo_filled_rounded.png", "8ab1180b4a61c62cff09a758560a0de4dcbc0e1f5ba9964b38d06b8c7d8dbc56"),
+    ("assets/img/logo_padded.svg", "eeb79b0ae5da35d3433de6edeec3a0e3cce9c24f517dbad26ed97e852666c8f4"),
+    ("assets/img/logo_plain.svg", "9965ccf211b32e0b65422e36104457981488eda7846a159e8194bead08efebd7"),
+    ("assets/img/masked copy.svg", "c5d4d2bf0a128dcfcea1a2dc2a60c54801aa0c5cb6a82463c2e3cb0d01d0ea87"),
+    ("assets/img/masked.svg", "69303a550a2d739ec1e9d5cf7704dc9e09fc05886b190780ec96c1cbefbabf92"),
+    ("assets/img/mstile-144x144.png", "38f3f7b80b5b511de76b9d1b3f18803e532eb896081acf2ab96e581d1df219e7"),
+    ("assets/img/mstile-150x150.png", "38293e121dc13c201f737fcfdb004f9edc8234f257373bb61f32844299bc7523"),
+    ("assets/img/mstile-310x150.png", "4b7b6fd06c7d9331a5b6a97857a1577cee15dcd18535d120bb3f98b7bbed8714"),
+    ("assets/img/mstile-310x310.png", "c711dbfec7bbab5b812b3ff36a18d41ab9a492739d93ba950cfcdfc3e212ff0e"),
+    ("assets/img/mstile-70x70.png", "1c0d3d1571e91eceebd4441fcfb4e3b2643cc5cd01fbbba95d80ee56f3fccf4a"),
+    ("assets/img/safari-pinned-tab.svg", "69303a550a2d739ec1e9d5cf7704dc9e09fc05886b190780ec96c1cbefbabf92"),
+)
+
+# Telegram's interface in a screenshot, for the install sheet of the web app
+# (path in public/, SHA-256): removed, and the manifests lose it.
+SCREENSHOT = ("assets/img/screenshot.jpg", "af2c7c5422f764adbc7f2f1febc254c978dc7d05d97b5d7934c15eeef6e8c1f0")
+
+# The accent of the light theme (the dark one's is #9dbb9f): the Windows
+# tile and the unread count drawn over the favicon.
+ACCENT = "#5b7a5e"
+
+
+def mark_logo():
+    """The sign-in page's logo, from brand/src/pluma-mark.svg: the ring in
+    the theme's text colour and the feathers in it at the opacities that
+    give the kit's greys on white, so that it reads on a dark theme too.
+    160 units square, as the logo it replaces."""
+    svg = (BRAND / "src/pluma-mark.svg").read_text(encoding="utf-8")
+    if 'viewBox="64 80 392 336"' not in svg:
+        raise PatchError("brand/src/pluma-mark.svg: not the viewBox 64 80 392 336 the logo is laid out for")
+    strokes = re.findall(r'<path fill="none" stroke="#([0-9A-F]{6})" stroke-width="(\d+)"([^>]*?) d="([^"]+)"/>', svg)
+    if [s[0] for s in strokes] != ["111111", "4A4A4A", "8A8A8A", "BDBDBD"]:
+        raise PatchError("brand/src/pluma-mark.svg: not the ring and three feathers in the kit's greys")
+    paths = []
+    for color, width, rest, d in strokes:
+        opacity = (255 - int(color[:2], 16)) / (255 - 0x11)
+        attrs = f' stroke-width="{width}"' + (f' stroke-opacity="{opacity:.2f}"' if opacity < 1 else "")
+        if "stroke-linejoin" in rest:
+            attrs += ' stroke-linejoin="round"'
+        paths.append(f'<path{attrs} d="{d}"/>')
+    # The mark is 392 units wide around (260, 248): 152 of the 160.
+    return ('<g id="logo" fill="none" stroke-linecap="round" style="stroke: var(--primary-text-color)" '
+            'transform="translate(80 80) scale(.3878) translate(-260 -248)">' + "".join(paths) + "</g>")
+
+
+def rebrand(tree, c):
+    # Icons and logos.
+    for rel, sha256 in ICONS:
+        tree.replace_file("public/" + rel, sha256, (BRAND / "web" / rel).read_bytes())
+    tree.replace_file("public/" + SCREENSHOT[0], SCREENSHOT[1], None)
+    # The sign-in page's logo, a symbol of the page used as 160 units square.
+    tree.replace_block("index.html", '        <path id="logo" fill-rule="evenodd" d="M80,0 ', '"/>\n',
+                       "        " + mark_logo() + "\n",
+                       must_contain=("M114.262551,46.4516129",))
+    tree.expect("src/pages/cards/SignInCard.tsx",
+                '<svg class={styles.logo} xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">\n'
+                '                <use href="#logo"/>\n')
+    # The QR code's logo (logo_padded.svg) carries its own colours: the code
+    # tints the first CSS fill of the file, and Pluma's has none.
+    tree.expect("src/helpers/qrCode/paintQrCode.ts", "text.replace(/(fill:).+?(;)/, `$1${logoColor}$2`)")
+    # Windows tiles.
+    tree.replace("index.html", '    <meta name="msapplication-TileColor" content="#2d89ef">\n',
+                 f'    <meta name="msapplication-TileColor" content="{ACCENT}">\n')
+    tree.replace("public/browserconfig.xml", "<TileColor>#2d89ef</TileColor>", f"<TileColor>{ACCENT}</TileColor>")
+    # The unread count over the favicon.
+    tree.replace("src/lib/uiNotificationsManager.ts", "    ctx.fillStyle = '#3390ec';\n",
+                 f"    ctx.fillStyle = '{ACCENT}'; // pluma: the accent\n")
 
 
 def patch(tree, c):
@@ -529,6 +667,9 @@ def patch(tree, c):
     for rel in ("public/site.webmanifest", "public/site_apple.webmanifest"):
         patch_manifest(tree, rel, c)
 
+    # Pluma's icons and logos.
+    rebrand(tree, c)
+
 
 def verify(tree, c):
     """Checks the result independently of how the edits were made."""
@@ -563,6 +704,15 @@ def verify(tree, c):
     env = load_env(tree.root / ".env.production.local")
     if env != TRANSPORT_FLAGS:
         raise PatchError(f".env.production.local: {env}, expected {TRANSPORT_FLAGS}")
+
+    # The brand: Pluma's icons and logos.
+    for rel, _ in ICONS:
+        if tree.sha256("public/" + rel) != hashlib.sha256((BRAND / "web" / rel).read_bytes()).hexdigest():
+            raise PatchError(f"public/{rel}: not Pluma's (brand/web)")
+    if (tree.root / "public" / SCREENSHOT[0]).exists():
+        raise PatchError(f"public/{SCREENSHOT[0]}: Telegram's screenshot is still there")
+    if '<g id="logo"' not in sources["index.html"]:
+        raise PatchError("index.html: not Pluma's logo on the sign-in page")
 
 
 def main(argv=None):

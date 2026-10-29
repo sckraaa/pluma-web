@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import hashlib
 import io
 import json
 import os
@@ -254,6 +255,23 @@ class TreeTest(unittest.TestCase):
         self.tree.replace_block("a.txt", "void f() {", "\n}\n", "int x;\n", must_contain=("body;",))
         self.assertEqual(self.tree.read("a.txt"), "one two two\nint x;\n")
 
+    def test_expect(self):
+        self.tree.expect("a.txt", "body;")
+        self.tree.expect("a.txt", "two", count=2)
+        with self.assertRaises(patch.PatchError):
+            self.tree.expect("a.txt", "two")
+
+    def test_replace_file(self):
+        sha256 = hashlib.sha256(self.tree.read("a.txt").encode()).hexdigest()
+        with self.assertRaises(patch.PatchError):
+            self.tree.replace_file("a.txt", "0" * 64, b"new")
+        with self.assertRaises(patch.PatchError):
+            self.tree.replace_file("b.txt", sha256, b"new")
+        self.tree.replace_file("a.txt", sha256, b"new")
+        self.assertEqual(self.tree.read("a.txt"), "new")
+        self.tree.replace_file("a.txt", hashlib.sha256(b"new").hexdigest(), None)
+        self.assertFalse((self.tree.root / "a.txt").exists())
+
     def test_not_a_checkout(self):
         with tempfile.TemporaryDirectory() as d, self.assertRaises(patch.PatchError):
             patch.Tree(d)
@@ -263,7 +281,8 @@ class TreeTest(unittest.TestCase):
 
 # What the patch reads, from the commit upstream.env pins.
 UPSTREAM_PATHS = ("src", "public/version", "public/site.webmanifest", "public/site_apple.webmanifest",
-                  "package.json", "index.html", "vite.config.ts")
+                  "public/browserconfig.xml", "public/assets/img", "package.json", "index.html", "vite.config.ts")
+
 
 DC = "src/lib/mtproto/dcConfigurator.ts"
 RSA = "src/lib/mtproto/rsaKeysManager.ts"
@@ -309,6 +328,15 @@ DAMAGE = (
     ("src/lib/mtproto/networker.ts", " * Originally from:\n", " * Originally from:\n * wss://zws2.web.telegram.org/apiws\n"),
     ("src/lib/mtproto/networker.ts", " * Originally from:\n", " * Originally from:\n * " + TWEB_TEST_MODULUS + "\n"),
     (DC, "export class DcConfigurator {", "const fallback = 'wss://pluma.example/apiws';\nexport class DcConfigurator {"),
+    # The brand: icons, logos and tiles.
+    ("public/site.webmanifest", '"src": "assets/img/screenshot.jpg"', '"src": "assets/img/screenshot2.jpg"'),
+    ("index.html", '<path id="logo" fill-rule="evenodd" d="M80,0 C124', '<path id="logo" d="M80,0 C124'),
+    ("index.html", "M114.262551,46.4516129", "M114.26,46.45"),
+    ("src/pages/cards/SignInCard.tsx", '<use href="#logo"/>', '<use href="#logo-round"/>'),
+    ("src/helpers/qrCode/paintQrCode.ts", "text.replace(/(fill:).+?(;)/,", "text.replace(/(fill:).+?(;)/g,"),
+    ("index.html", 'content="#2d89ef"', 'content="#2b5797"'),
+    ("public/browserconfig.xml", "<TileColor>#2d89ef</TileColor>", "<TileColor>#2b5797</TileColor>"),
+    ("src/lib/uiNotificationsManager.ts", "ctx.fillStyle = '#3390ec';", "ctx.fillStyle = '#3390EC';"),
 )
 
 
@@ -343,6 +371,14 @@ class RecordingTree(patch.Tree):
     def write(self, rel, text):
         self.written.add(str(rel))
         super().write(rel, text)
+
+    def write_bytes(self, rel, data):
+        self.written.add(str(rel))
+        super().write_bytes(rel, data)
+
+    def remove(self, rel):
+        self.written.add(str(rel))
+        super().remove(rel)
 
 
 @unittest.skipIf(not os.environ.get("CI") and upstream_files() is None,
@@ -405,7 +441,25 @@ class UpstreamTest(unittest.TestCase):
             self.assertEqual((m["name"], m["short_name"]), ("Pluma", "Pluma"))
             self.assertNotIn("scope_extensions", m)
             self.assertNotIn("gcm_sender_id", m)
+            self.assertNotIn("screenshots", m)
         self.assertEqual(patch.load_env(self.root / ".env.production.local"), patch.TRANSPORT_FLAGS)
+
+        # The brand.
+        for rel, _ in patch.ICONS:
+            self.assertEqual((self.root / "public" / rel).read_bytes(), (patch.BRAND / "web" / rel).read_bytes())
+        self.assertFalse((self.root / "public" / patch.SCREENSHOT[0]).exists())
+        index = tree.read("index.html")
+        self.assertIn('<g id="logo" fill="none" stroke-linecap="round" style="stroke: var(--primary-text-color)"', index)
+        self.assertIn('<path stroke-width="30" stroke-opacity="0.76" d="M180,382 L94.6,372"/>', index)
+        self.assertIn('<meta name="msapplication-TileColor" content="#5b7a5e">', index)
+
+    def test_icon_changed(self):
+        # An icon upstream replaced is one Pluma's render was not made for.
+        rel = "public/assets/img/favicon.ico"
+        self.written.add(rel)
+        (self.root / rel).write_bytes(self.files[rel] + b"\0")
+        with self.assertRaisesRegex(patch.PatchError, "favicon.ico"):
+            self.run_patch()
 
     def test_dev_server(self):
         tree, _ = self.run_patch("ws://localhost:11443/apiws")
@@ -448,6 +502,8 @@ class BundleTest(unittest.TestCase):
                    "var m={multipleTransports:!1};var t=`https://t.me/`+n;")
         self.write("index.worker-abc.js.map", json.dumps({"sourcesContent": ["// see https://web.telegram.org/a/"]}))
         self.write("assets/img/logo.png", b"\x89PNG\r\n\x1a\n\x00\x01")
+        for rel, _ in patch.ICONS:
+            self.write(rel, (patch.BRAND / "web" / rel).read_bytes())
 
     def tearDown(self):
         self.dir.cleanup()
@@ -463,7 +519,7 @@ class BundleTest(unittest.TestCase):
         return check_bundle.check(self.site, self.record, target)
 
     def test_good(self):
-        self.assertEqual(self.check(), 6)
+        self.assertEqual(self.check(), 6 + len(patch.ICONS))
 
     def test_rejects(self):
         url = self.record["server_url"]
@@ -478,6 +534,8 @@ class BundleTest(unittest.TestCase):
             ("site.webmanifest", json.dumps({"name": "Telegram Web", "short_name": "Telegram Web"})),
             ("index.html", "<title>Telegram Web</title>"),
             ("site_apple.webmanifest", "{"),
+            ("assets/img/favicon.ico", b"\x00\x00\x01\x00\x01\x00"),
+            (patch.SCREENSHOT[0], b"\xff\xd8\xff\xe0"),
         ):
             with self.subTest(rel=rel):
                 self.tearDown()
@@ -494,6 +552,10 @@ class BundleTest(unittest.TestCase):
                 with self.assertRaises(patch.PatchError):
                     self.check()
         self.write("index.worker-abc.js", code)
+        (self.site / patch.ICONS[0][0]).unlink()
+        with self.assertRaises(patch.PatchError):
+            self.check()
+        self.write(patch.ICONS[0][0], (patch.BRAND / "web" / patch.ICONS[0][0]).read_bytes())
         (self.site / "index.html").unlink()
         with self.assertRaises(patch.PatchError):
             self.check()
