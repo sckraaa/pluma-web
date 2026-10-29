@@ -69,6 +69,8 @@ Unlike an APK, the site is not encrypted: it is static content that the server's
 
 Serve the directory as it is, under one path of one HTTPS origin: the page, its workers and its service worker must come from the same place. Serving it is the server's business, with the TLS proxy for `/apiws`.
 
+On `main`, a build for the server is also published as the image `ghcr.io/sckraaa/pluma-web:<commit>`: Caddy with the site in `/srv` ([`ci/site.Dockerfile`](ci/site.Dockerfile)). The server runs it with its own Caddyfile, which adds TLS and the proxy for `/apiws` (`docker-compose.web.yaml` and `docs/ops/deployment.md` of the server repository).
+
 ## When it builds
 
 | Trigger | Build | Artifact |
