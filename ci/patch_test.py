@@ -283,6 +283,7 @@ class TreeTest(unittest.TestCase):
 UPSTREAM_PATHS = ("src", "public/version", "public/site.webmanifest", "public/site_apple.webmanifest",
                   "public/browserconfig.xml", "public/assets/img", "package.json", "index.html", "vite.config.ts")
 
+SIDEBAR = "src/components/sidebarLeft/index.ts"
 
 DC = "src/lib/mtproto/dcConfigurator.ts"
 RSA = "src/lib/mtproto/rsaKeysManager.ts"
@@ -337,6 +338,19 @@ DAMAGE = (
     ("index.html", 'content="#2d89ef"', 'content="#2b5797"'),
     ("public/browserconfig.xml", "<TileColor>#2d89ef</TileColor>", "<TileColor>#2b5797</TileColor>"),
     ("src/lib/uiNotificationsManager.ts", "ctx.fillStyle = '#3390ec';", "ctx.fillStyle = '#3390EC';"),
+    # The name: a string that says Telegram anew, one that no longer does,
+    # and the places in the code.
+    ("src/lang.ts", "  'AppName': 'Telegram',\n", "  'AppName': 'Telegram',\n  'AppNameFull': 'Telegram Messenger',\n"),
+    ("src/langSign.ts", "'Sign in to Telegram'", "'Sign in'"),
+    ("src/lang.ts", "'TelegramFeaturesUrl': 'https://t.me/TelegramTips'", "'TelegramFeaturesUrl': 'https://t.me/Tips'"),
+    (SIDEBAR, "btnMenuFooter.href = 'https://github.com/morethanwords/tweb", "btnMenuFooter.href = 'https://github.com/tweb"),
+    (SIDEBAR, "`Telegram Web${App.suffix} ${App.version}", "`Telegram Web ${App.suffix} ${App.version}"),
+    (SIDEBAR, "a.href = 'https://bugs.telegram.org/?tag_ids=40&sort=time';", "a.href = 'https://bugs.telegram.org/';"),
+    ("src/lib/appManagers/apiUpdatesManager.ts", "**Telegram Web${App.suffix} ${langStr}", "**Telegram Web ${langStr}"),
+    ("src/lib/appManagers/appMessagesManager.ts", "first_name: 'Telegram',\n        phone: '42777'",
+     "first_name: 'Telegram Notifications',\n        phone: '42777'"),
+    ("src/lib/serviceWorker/push.ts", "showNotification('Telegram Web', {", "showNotification('Telegram Web K', {"),
+    ("src/lib/serviceWorker/push.ts", "    title = 'Telegram';\n", "    title = 'Telegram Web';\n"),
 )
 
 
@@ -452,6 +466,14 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn('<g id="logo" fill="none" stroke-linecap="round" style="stroke: var(--primary-text-color)"', index)
         self.assertIn('<path stroke-width="30" stroke-opacity="0.76" d="M180,382 L94.6,372"/>', index)
         self.assertIn('<meta name="msapplication-TileColor" content="#5b7a5e">', index)
+        self.assertIn("'Login.Title': 'Sign in to Pluma',", tree.read("src/langSign.ts"))
+        lang = tree.read("src/lang.ts")
+        for s in ("'AppName': 'Pluma',", "'BoostingStars': 'Pluma Stars',",
+                  "'Premium.Boarding.Peer.Title': '[%@](profile) is a subscriber of\\nPluma Premium',",
+                  "'TelegramFeaturesUrl': 'https://t.me/TelegramTips',"):
+            self.assertIn(s, lang)
+        self.assertIn("t.textContent = `Pluma Web ${App.version} (${App.build})`;", tree.read(SIDEBAR))
+        self.assertNotIn("'ReportBug'", tree.read(SIDEBAR))
 
     def test_icon_changed(self):
         # An icon upstream replaced is one Pluma's render was not made for.
@@ -499,7 +521,8 @@ class BundleTest(unittest.TestCase):
         self.write("index.worker-abc.js",
                    f"function Re(e){{return Le(e),`{url}`}}var k=[{{modulus:`{modulus}`,exponent:`010001`}}];"
                    f"var s={{API:{{}},layer:228}};var a={{id:10004,hash:`{api_hash}`}};"
-                   "var m={multipleTransports:!1};var t=`https://t.me/`+n;")
+                   "var m={multipleTransports:!1};var t=`https://t.me/`+n;"
+                   "var l={\"Login.Title\":`Sign in to Pluma`};")
         self.write("index.worker-abc.js.map", json.dumps({"sourcesContent": ["// see https://web.telegram.org/a/"]}))
         self.write("assets/img/logo.png", b"\x89PNG\r\n\x1a\n\x00\x01")
         for rel, _ in patch.ICONS:
@@ -536,6 +559,7 @@ class BundleTest(unittest.TestCase):
             ("site_apple.webmanifest", "{"),
             ("assets/img/favicon.ico", b"\x00\x00\x01\x00\x01\x00"),
             (patch.SCREENSHOT[0], b"\xff\xd8\xff\xe0"),
+            ("h.js", "var l={\"Login.Title\":`Sign in to Telegram`};"),
         ):
             with self.subTest(rel=rel):
                 self.tearDown()
@@ -546,7 +570,8 @@ class BundleTest(unittest.TestCase):
 
     def test_rejects_missing(self):
         code = (self.site / "index.worker-abc.js").read_text()
-        for gone in (self.record["server_url"], self.record["modulus"], self.record["api_hash"], "layer:228"):
+        for gone in (self.record["server_url"], self.record["modulus"], self.record["api_hash"], "layer:228",
+                     "Sign in to Pluma"):
             with self.subTest(gone=gone[:30]):
                 self.write("index.worker-abc.js", code.replace(gone, "x"))
                 with self.assertRaises(patch.PatchError):

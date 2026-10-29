@@ -80,13 +80,15 @@ def check(site, record, target):
         if m.get("name") != name or m.get("short_name") != name:
             raise PatchError(f"{rel}: the app is not named {name}")
 
-    # Pluma's icons and logos, not Telegram's.
+    # Pluma's icons and its name on the sign-in page.
     for rel, _ in patch.ICONS:
         p = site / rel
         if not p.is_file() or p.read_bytes() != (patch.BRAND / "web" / rel).read_bytes():
             raise PatchError(f"{rel}: not Pluma's (brand/web)")
     if (site / patch.SCREENSHOT[0]).exists():
         raise PatchError(f"{patch.SCREENSHOT[0]}: Telegram's screenshot is in the site")
+    if f"Sign in to {name}" not in code or "Sign in to Telegram" in code or "Scan with Telegram" in code:
+        raise PatchError(f"the code's sign-in page does not say {name}")
     return len(files)
 
 

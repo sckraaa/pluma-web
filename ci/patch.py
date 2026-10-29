@@ -420,8 +420,13 @@ def patch_manifest(tree, rel, c):
 
 # --- the brand -----------------------------------------------------------------
 #
-# Pluma's icons and logos instead of Telegram's (task 017 of the server
-# repository).
+# Pluma's name, icons and logos instead of Telegram's (task 017 of the
+# server repository). What the user sees changes; keys, identifiers, file
+# names, storage, the mini-app API (window.Telegram) and the URLs of
+# Telegram's sites stay as they are.
+
+# Where the footer of the menu points: the source of this build (GPL).
+SOURCE_URL = "https://github.com/sckraaa/pluma-web"
 
 # Pluma's icons and logos (brand/web, rendered from brand/src by
 # brand/render.sh) over Telegram's, file for file: (path in public/, SHA-256
@@ -467,6 +472,16 @@ ICONS = (
 # (path in public/, SHA-256): removed, and the manifests lose it.
 SCREENSHOT = ("assets/img/screenshot.jpg", "af2c7c5422f764adbc7f2f1febc254c978dc7d05d97b5d7934c15eeef6e8c1f0")
 
+# The built-in English strings. The word Telegram in a value becomes the
+# app's name ("Pluma Premium", "Sign in to Pluma"); in a key, a comment or a
+# URL (t.me/TelegramTips) it stays: (file, words renamed, words left).
+STRINGS = (
+    ("src/lang.ts", 210, 30),
+    ("src/langSign.ts", 7, 0),
+)
+_STRING_ENTRY = re.compile(r"^(\s*'(?:[^'\\]|\\.)*':\s*)(.*)$")
+_TELEGRAM_WORD = re.compile(r"(?:(?<![\w./@-])|(?<=\\n))Telegram(?!\w)")
+
 # The accent of the light theme (the dark one's is #9dbb9f): the Windows
 # tile and the unread count drawn over the favicon.
 ACCENT = "#5b7a5e"
@@ -495,7 +510,29 @@ def mark_logo():
             'transform="translate(80 80) scale(.3878) translate(-260 -248)">' + "".join(paths) + "</g>")
 
 
+def rename_strings(tree, rel, name, renamed, left):
+    """The word Telegram in the values of a language file becomes name."""
+    count = 0
+    lines = []
+    for line in tree.read(rel).split("\n"):
+        m = _STRING_ENTRY.match(line)
+        if m:
+            value, n = _TELEGRAM_WORD.subn(name, m.group(2))
+            line = m.group(1) + value
+            count += n
+        lines.append(line)
+    text = "\n".join(lines)
+    if count != renamed:
+        raise PatchError(f"{rel}: Telegram in {count} strings, expected {renamed}; review the new ones")
+    if text.count("Telegram") != left:
+        raise PatchError(f"{rel}: Telegram {text.count('Telegram')} times in keys, comments and URLs, "
+                         f"expected {left}; review the new ones")
+    tree.write(rel, text)
+
+
 def rebrand(tree, c):
+    name = c.app_name
+
     # Icons and logos.
     for rel, sha256 in ICONS:
         tree.replace_file("public/" + rel, sha256, (BRAND / "web" / rel).read_bytes())
@@ -517,6 +554,58 @@ def rebrand(tree, c):
     # The unread count over the favicon.
     tree.replace("src/lib/uiNotificationsManager.ts", "    ctx.fillStyle = '#3390ec';\n",
                  f"    ctx.fillStyle = '{ACCENT}'; // pluma: the accent\n")
+
+    # The name.
+    for rel, renamed, left in STRINGS:
+        rename_strings(tree, rel, name, renamed, left)
+    side = "src/components/sidebarLeft/index.ts"
+    tree.replace(side,
+                 "  btnMenuFooter.href = 'https://github.com/morethanwords/tweb/blob/master/CHANGELOG.md';\n",
+                 "  // pluma: the source of this build.\n"
+                 f"  btnMenuFooter.href = '{SOURCE_URL}';\n")
+    tree.replace(side, "  t.textContent = `Telegram Web${App.suffix} ${App.version} (${App.build})`;\n",
+                 f"  t.textContent = `{name} Web ${{App.version}} (${{App.build}})`;\n")
+    tree.replace("src/lib/appManagers/apiUpdatesManager.ts",
+                 "const pre = `**Telegram Web${App.suffix} ${langStr} ${newVersion}**\\n\\n`;",
+                 f"const pre = `**{name} Web ${{langStr}} ${{newVersion}}**\\n\\n`;")
+    # The service account (777000) until the server's user arrives.
+    tree.replace("src/lib/appManagers/appMessagesManager.ts", "        first_name: 'Telegram',\n        phone: '42777'",
+                 f"        first_name: '{name}',\n        phone: '42777'")
+    push = "src/lib/serviceWorker/push.ts"
+    tree.replace(push, "    push_message_error: 'Telegram is syncing in the background...',\n",
+                 f"    push_message_error: '{name} is syncing in the background...',\n")
+    tree.replace(push, "ctx.registration.showNotification('Telegram Web', {", f"ctx.registration.showNotification('{name}', {{")
+    tree.replace(push, "  let title = obj.title || 'Telegram';\n", f"  let title = obj.title || '{name}';\n")
+    tree.replace(push, "    title = 'Telegram';\n    body = lang.push_message_nopreview;\n",
+                 f"    title = '{name}';\n    body = lang.push_message_nopreview;\n")
+
+    # Entry points to Telegram's own services, of no use with Pluma.
+    tree.replace(side,
+                 "    }, {\n"
+                 "      icon: 'help',\n"
+                 "      text: 'TelegramFeatures',\n"
+                 "      onClick: () => {\n"
+                 "        const url = I18n.format('TelegramFeaturesUrl', true);\n"
+                 "        appImManager.openUrl(url);\n"
+                 "      },\n"
+                 "      separator: !App.isMainDomain\n"
+                 "    }, {\n"
+                 "      icon: 'bug',\n"
+                 "      text: 'ReportBug',\n"
+                 "      onClick: () => {\n"
+                 "        const a = document.createElement('a');\n"
+                 "        setBlankToAnchor(a);\n"
+                 "        a.href = 'https://bugs.telegram.org/?tag_ids=40&sort=time';\n"
+                 "        document.body.append(a);\n"
+                 "        a.click();\n"
+                 "        setTimeout(() => {\n"
+                 "          a.remove();\n"
+                 "        }, 0);\n"
+                 "      }\n"
+                 "    }, {\n",
+                 "    }, {\n"
+                 "      // pluma: no \"Telegram Features\" (t.me/TelegramTips) and \"Report Bug\"\n"
+                 "      // (bugs.telegram.org): Telegram's own services.\n")
 
 
 def patch(tree, c):
@@ -667,7 +756,7 @@ def patch(tree, c):
     for rel in ("public/site.webmanifest", "public/site_apple.webmanifest"):
         patch_manifest(tree, rel, c)
 
-    # Pluma's icons and logos.
+    # Pluma's name, icons and logos.
     rebrand(tree, c)
 
 
@@ -705,12 +794,17 @@ def verify(tree, c):
     if env != TRANSPORT_FLAGS:
         raise PatchError(f".env.production.local: {env}, expected {TRANSPORT_FLAGS}")
 
-    # The brand: Pluma's icons and logos.
+    # The brand: Pluma's icons, no Telegram in the strings.
     for rel, _ in ICONS:
         if tree.sha256("public/" + rel) != hashlib.sha256((BRAND / "web" / rel).read_bytes()).hexdigest():
             raise PatchError(f"public/{rel}: not Pluma's (brand/web)")
     if (tree.root / "public" / SCREENSHOT[0]).exists():
         raise PatchError(f"public/{SCREENSHOT[0]}: Telegram's screenshot is still there")
+    for rel, _, _ in STRINGS:
+        for line in sources[rel].split("\n"):
+            m = _STRING_ENTRY.match(line)
+            if m and _TELEGRAM_WORD.search(m.group(2)):
+                raise PatchError(f"{rel}: {m.group(2)[:60]!r} still says Telegram")
     if '<g id="logo"' not in sources["index.html"]:
         raise PatchError("index.html: not Pluma's logo on the sign-in page")
 
