@@ -17,9 +17,10 @@ tweb has no releases, so Pluma pins a commit: [`346844bf`](https://github.com/mo
 - **No HTTP transport.** tweb can also carry MTProto over HTTP: as an alternative and, in its default build, as the transport it starts on. The Pluma gateway takes MTProto over WebSocket only, so the build switches tweb's HTTP transport off (`.env.production.local`, which Vite reads after upstream's `.env`), and the patch removes its Telegram addresses. Every connection, uploads included, goes over WebSocket.
 - **Server key.** The server's RSA key, as tweb's hex modulus and exponent, replaces Telegram's production and test keys.
 - **App identity.** The app uses Pluma's `api_id`/`api_hash` ([`config/app.env`](config/app.env)); the page title and the installed web app are "Pluma".
+- **Brand.** Pluma's name, icons, `plm://` links and colours instead of Telegram's ([Branding](#branding)).
 - **Telegram's own services.** None are contacted (next section).
 
-After the edits, the sources are checked again. After the build, [`ci/check_bundle.py`](ci/check_bundle.py) reads every file of the site, source maps included: the server URL, the server key, the `api_hash` and layer 228 must be there; no Telegram datacenter address, MTProto endpoint, server key or credential may be; the code may open no WebSocket but the server's.
+After the edits, the sources are checked again. After the build, [`ci/check_bundle.py`](ci/check_bundle.py) reads every file of the site, source maps included: the server URL, the server key, the `api_hash`, layer 228, Pluma's icons, "Sign in to Pluma" and the `plm://login` link of the QR code must be there; no Telegram datacenter address, MTProto endpoint, server key or credential may be; the code may open no WebSocket but the server's.
 
 ## What the client sends outside the server
 
@@ -36,10 +37,25 @@ tweb looks up no backup datacenter addresses (no DNS or Firebase records, unlike
 
 Left as they are, since they need the user to act:
 
-- links in the interface to telegram.org, t.me, fragment.com, ads.telegram.org and the like, among them *Report a Bug* (bugs.telegram.org) in the menu;
+- links in the interface to telegram.org, t.me, fragment.com, ads.telegram.org and the like (the menu's *Telegram Features* and *Report a Bug* are gone, [Branding](#branding));
 - maps.google.com, when the user opens a shared location;
 - payments: card details go to the payment provider's tokenizer (Stripe, Smart Glocal) when a user pays an invoice, as in Telegram;
 - location-based groups: the user's position goes to nominatim.openstreetmap.org for the address when a user creates one.
+
+## Branding
+
+The client looks like Pluma, not like Telegram:
+
+- **Name.** Every "Telegram" in the built-in English strings becomes the app's name (`PLUMA_APP_NAME`): "Sign in to Pluma", "Pluma Premium", "Pluma Stars". Keys and code identifiers, the mini-app API (`window.Telegram`), storage names and the URLs of Telegram's sites stay. The patch counts the words it renames and the ones it leaves, so a new string upstream stops the build until someone has looked at it. The menu's footer reads "Pluma Web 2.2 (676)" and links to this repository; the menu loses *Telegram Features* (t.me/TelegramTips) and *Report a Bug* (bugs.telegram.org).
+- **Icons and logos.** Favicons, app icons, the Safari and Windows tiles, the notification icon and badge and the logo in the middle of the QR code are Pluma's, and Telegram's screenshot leaves the manifests. The sign-in page draws the mark in the theme's text colour.
+- **Links.** Pluma's apps use `plm://` where Telegram's use `tg://`, which stays with Telegram's apps installed beside them. The QR code signs in with `plm://login?token=…`; the links the client makes (bot commands, hashtags, settings, instant view, voice chats) are `plm://`, and it opens `plm://` links, not `tg://` ones. A web page cannot register `plm://` with the system (browsers take `web+` schemes only), so that is the desktop and mobile apps' part.
+- **Colours.** The default light and dark themes are "graphite and sage": accent `#5B7A5E` and `#9DBB9F`, outgoing bubbles `#E3EAE2` and `#2C3A2D` (Web K draws no gradient), sage wallpapers, and dark text on the light accent of the dark theme. Themes a browser saved with an earlier build switch from Telegram's defaults to these. The *Day* and *Dark Blue* themes and the accent presets a user picks stay as upstream has them.
+
+The assets come from the owner's brand kit. [`brand/src`](brand/src) holds its SVGs and two derived from the mark (a tight favicon and the QR code's logo); [`brand/web`](brand/web) holds the files rendered from them, at the paths of upstream's `public/`. The patch copies them over upstream's files, each checked by its SHA-256, and `ci/check_bundle.py` finds them in the site. After changing an SVG, render them again (rsvg-convert of librsvg and ImageMagick 7) and commit what changed:
+
+```sh
+brand/render.sh
+```
 
 ## Configuration
 
