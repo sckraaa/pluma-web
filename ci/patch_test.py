@@ -298,6 +298,8 @@ STATE = "src/config/state.ts"
 SIDEBAR = "src/components/sidebarLeft/index.ts"
 BASE = "src/scss/base.scss"
 CHATLIST = "src/scss/partials/_chatlist.scss"
+BIRTHDAYS = "src/components/sidebarLeft/birthdaySuggestions.tsx"
+PROFILE = "src/components/peerProfile.tsx"
 
 DC = "src/lib/mtproto/dcConfigurator.ts"
 RSA = "src/lib/mtproto/rsaKeysManager.ts"
@@ -406,6 +408,43 @@ DAMAGE = (
      "    background: var(--chatlist-status-color);\n  }\n"),
     (CHATLIST, "          color: rgba(255, 255, 255, .7);", "          color: rgba(255, 255, 255, .6);"),
     (CHATLIST, "          --color: #fff;\n", "          --color: white;\n"),
+    # The birthday banner: its strings, what its new code calls, the places
+    # it edits, and a way to gifts the edits do not know.
+    ("src/lang.ts", "  'SendMessageTitle': 'Send message',\n", "  'SendMessageTitle': 'Send a message',\n"),
+    ("src/lang.ts", "  'Suggestion.BirthdayContacts.Today': 'Birthday today',\n",
+     "  'Suggestion.BirthdayContacts.Today': 'Today',\n"),
+    ("src/components/popups/pickUser.tsx", "export default function showPickUserPopup(options: PopupPickUserOptions) {",
+     "export default function showPickUserPopup(options: PickUserOptions) {"),
+    ("src/lib/appImManager.ts", "  public async setPeer(options: Partial<ChatSetInnerPeerOptions> = {}, animate?: boolean)",
+     "  public async setPeer(options: ChatSetPeerOptions = {}, animate?: boolean)"),
+    # The profile's Birthday row: the places it edits.
+    (PROFILE, "PeerProfile.Birthday = () => {\n  const context = useContext(PeerProfileContext);\n",
+     "PeerProfile.Birthday = () => {\n  const context = usePeerProfile();\n"),
+    (PROFILE, "    if(isToday()) {\n      return () => showSendGiftPopup({\n",
+     "    if(isToday() && canGift()) {\n      return () => showSendGiftPopup({\n"),
+    (BIRTHDAYS, "import showSendGiftPopup from '@components/popups/sendGift';",
+     "import showSendGiftPopup from '@components/popups/sendGift/index';"),
+    (BIRTHDAYS, "import {toastNew} from '@components/toast';", "import {toastNew, toastError} from '@components/toast';"),
+    (BIRTHDAYS, "import {i18n} from '@lib/langPack';", "import {i18n, I18n} from '@lib/langPack';"),
+    (BIRTHDAYS, "import {useAppState} from '@stores/appState';", "import {useAppConfig} from '@stores/appState';"),
+    (BIRTHDAYS, "import {createEffect, createMemo,", "import {createEffect, createComputed, createMemo,"),
+    (BIRTHDAYS, "// Preview-only: 1 opens the gift popup directly,", "// Preview only: 1 opens the gift popup directly,"),
+    (BIRTHDAYS, "showSendGiftPopup({peerId, birthday: birthdayPeerIds().has(peerId)});",
+     "showSendGiftPopup({peerId, birthday: true});"),
+    (BIRTHDAYS, "      prependPeerIds: nearbyContacts().map(({peerId}) => peerId),\n",
+     "      prependPeerIds: contacts().map(({peerId}) => peerId),\n"),
+    (BIRTHDAYS, "{i18n('Suggestion.BirthdayContacts.Subtitle')}", "{i18n('Suggestion.BirthdayContacts.Gift')}"),
+    (BIRTHDAYS, "  const [{appConfig}] = useAppState();", "  const [{appConfig, premium}] = useAppState();"),
+    (BIRTHDAYS, "TEST_BIRTHDAY_CONTACTS || !appConfig.premium_purchase_blocked;",
+     "TEST_BIRTHDAY_CONTACTS || !appConfig.premium_purchase_blocked && !appConfig.stars_purchase_blocked;"),
+    (BIRTHDAYS, "      canLoadBirthdayContacts() &&\n      promoDataLoaded() &&\n",
+     "      promoDataLoaded() &&\n      canLoadBirthdayContacts() &&\n"),
+    (BIRTHDAYS, "    if(!canLoadBirthdayContacts()) {\n", "    if(!canLoadBirthdayContacts() || !promoDataLoaded()) {\n"),
+    (BIRTHDAYS, "appGiftsManager.getStarGiftOptions().catch(() => {});", "appGiftsManager.getStarGiftOptions().catch(noop);"),
+    (BIRTHDAYS, "toastNew({langPackKey: 'Suggestion.BirthdayContacts.Dismissed'});",
+     "toastNew({langPackKey: 'Suggestion.BirthdayContacts.Dismissed', duration: 3000});"),
+    (BIRTHDAYS, "  const onDismissed = () => {\n",
+     "  const onDismissed = () => {\n    showSendGiftPopup({peerId: rootScope.myId});\n"),
 )
 
 
@@ -542,6 +581,37 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn(".btn-color-primary {\n  background: var(--primary-color);\n  color: var(--on-primary-color);",
                       tree.read("src/scss/partials/_button.scss"))
         self.assertNotIn("#fff", tree.read(CHATLIST).split("&.active {", 1)[1].split("\n      }\n", 1)[0])
+
+        # The birthday banner: shown without Premium for sale, its tap opens
+        # the chat or the list of today's birthdays, no gift anywhere.
+        birthdays = tree.read(BIRTHDAYS)
+        for s in ("import showPickUserPopup from '@components/popups/pickUser';\n",
+                  "import appImManager from '@lib/appImManager';\n",
+                  "    TEST_BIRTHDAY_CONTACTS || (\n      promoDataLoaded() &&\n"
+                  "      !dismissedSuggestions().has(BIRTHDAY_CONTACTS_TODAY_SUGGESTION_KEY)\n",
+                  "  onMount(() => {\n    void loadContactBirthdays();\n  });\n",
+                  "      openChat(contacts()[0].peerId);\n",
+                  "    appImManager.setPeer({peerId});\n",
+                  "    const todayPeerIds = contacts().map(({peerId}) => peerId);\n",
+                  "      titleLangKey: 'SendMessageTitle',\n      peerType: ['custom'],\n",
+                  "getMoreCustom: async() => ({result: todayPeerIds, isEnd: true}),",
+                  "      onSelect: ([{peerId}]) => openChat(peerId)\n",
+                  "<PendingSuggestion.Subtitle>{i18n('SendMessageTitle')}</PendingSuggestion.Subtitle>",
+                  # Closing it stays as upstream has it.
+                  "closable={props.onDismiss}",
+                  "      rootScope.managers.appPromoManager.dismissSuggestion(BIRTHDAY_CONTACTS_TODAY_SUGGESTION_KEY);\n"):
+            self.assertIn(s, birthdays)
+        for s in ("Gift", "premium_purchase_blocked", "appConfig", "toastNew", "useAppState", "nearbyContacts",
+                  "canLoadBirthdayContacts", "createEffect"):
+            self.assertNotIn(s, birthdays)
+        self.assertNotIn("setInnerPeer", birthdays)
+        # The profile's Birthday row: a gift only while Premium is for sale.
+        profile = tree.read(PROFILE)
+        for s in ("PeerProfile.Birthday = () => {\n  const context = useContext(PeerProfileContext);\n"
+                  "  const appConfig = useAppConfig();\n",
+                  "    if(isToday() && !appConfig.premium_purchase_blocked) {\n"
+                  "      return () => showSendGiftPopup({\n"):
+            self.assertIn(s, profile)
 
     def test_icon_changed(self):
         # An icon upstream replaced is one Pluma's render was not made for.

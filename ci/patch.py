@@ -923,6 +923,184 @@ def rebrand(tree, c):
                         ))
 
 
+# --- birthdays -----------------------------------------------------------------
+#
+# The banner above the chat list when contacts have a birthday today. Pluma
+# sells no Premium and has no gifts (help.getAppConfig sets
+# premium_purchase_blocked): upstream would hide the banner, and its tap leads
+# to a gift. Pluma shows it and its tap opens the chat (the owner's decision,
+# task 020 of the server repository); when it shows, how it looks and how it
+# closes stay as upstream has them.
+
+BIRTHDAYS = "src/components/sidebarLeft/birthdaySuggestions.tsx"
+
+# The strings the banner and its list take where upstream's offer a gift:
+# entries of lang.ts, the English that every language pack falls back to.
+BIRTHDAY_STRINGS = (
+    "  'SendMessageTitle': 'Send message',\n",
+    "  'Suggestion.BirthdayContacts.Today': 'Birthday today',\n",
+)
+
+
+def birthday_banner(tree):
+    """The banner of contacts' birthdays shows without Premium for sale. Its
+    tap opens the chat with the contact or, when several have a birthday
+    today, the list of them, where the one picked opens their chat. It
+    offers no gift: not in its subtitle, not in the toast after closing it."""
+    rel = BIRTHDAYS
+    for s in BIRTHDAY_STRINGS:
+        tree.expect("src/lang.ts", s)
+    tree.expect("src/components/popups/pickUser.tsx",
+                "export default function showPickUserPopup(options: PopupPickUserOptions) {\n")
+    tree.expect("src/lib/appImManager.ts",
+                "  public async setPeer(options: Partial<ChatSetInnerPeerOptions> = {}, animate?: boolean): Promise<boolean> {\n")
+
+    tree.replace(rel,
+                 "import showSendGiftPicker from '@components/popups/sendGiftPicker';\n"
+                 "import showSendGiftPopup from '@components/popups/sendGift';\n",
+                 "import showPickUserPopup from '@components/popups/pickUser';\n")
+    tree.replace(rel, "import {toastNew} from '@components/toast';\n", "")
+    tree.replace(rel, "import {i18n} from '@lib/langPack';\n",
+                 "import appImManager from '@lib/appImManager';\n"
+                 "import {i18n} from '@lib/langPack';\n")
+    tree.replace(rel, "import {useAppState} from '@stores/appState';\n", "")
+    tree.replace(rel,
+                 "// Preview-only: 1 opens the gift popup directly, 2+ opens the recipient picker.\n",
+                 "// Preview-only: 1 opens the chat directly, 2+ opens the list of them to pick\n"
+                 "// from (pluma: not the gift popup and the recipient picker).\n")
+
+    # The tap: the chat, not a gift.
+    tree.replace(rel,
+                 "  const nearbyContacts = createMemo(() => [\n"
+                 "    ...props.state.today,\n"
+                 "    ...props.state.yesterday,\n"
+                 "    ...props.state.tomorrow\n"
+                 "  ]);\n"
+                 "  const birthdayPeerIds = createMemo(() => new Set(nearbyContacts().map(({peerId}) => peerId)));\n"
+                 "  const yesterdayPeerIds = createMemo(() => new Set(props.state.yesterday.map(({peerId}) => peerId)));\n"
+                 "  const todayPeerIds = createMemo(() => new Set(props.state.today.map(({peerId}) => peerId)));\n"
+                 "\n"
+                 "  const openGift = (peerId: PeerId) => {\n"
+                 "    showSendGiftPopup({peerId, birthday: birthdayPeerIds().has(peerId)});\n"
+                 "  };\n"
+                 "\n"
+                 "  const onClick = () => {\n"
+                 "    if(contacts().length === 1) {\n"
+                 "      openGift(contacts()[0].peerId);\n"
+                 "      return;\n"
+                 "    }\n"
+                 "\n"
+                 "    showSendGiftPicker({\n"
+                 "      prependPeerIds: nearbyContacts().map(({peerId}) => peerId),\n"
+                 "      getSubtitleForElement: (peerId) => {\n"
+                 "        const key = todayPeerIds().has(peerId) ? 'Suggestion.BirthdayContacts.Today' :\n"
+                 "          yesterdayPeerIds().has(peerId) ? 'Suggestion.BirthdayContacts.Yesterday' :\n"
+                 "          birthdayPeerIds().has(peerId) ? 'Suggestion.BirthdayContacts.Tomorrow' : undefined;\n"
+                 "        return key ? i18n(key) : undefined;\n"
+                 "      },\n"
+                 "      onSelect: ([{peerId}]) => openGift(peerId)\n"
+                 "    });\n"
+                 "  };\n",
+                 "  // pluma: Pluma has no gifts. The banner (\"Send message\" under the\n"
+                 "  // title) opens the chat with the contact or, when several have a\n"
+                 "  // birthday today, the list of them, where the one picked opens their chat,\n"
+                 "  // as a tap in the chat list opens it (setPeer, appDialogsManager).\n"
+                 "  const openChat = (peerId: PeerId) => {\n"
+                 "    appImManager.setPeer({peerId});\n"
+                 "  };\n"
+                 "\n"
+                 "  const onClick = () => {\n"
+                 "    if(contacts().length === 1) {\n"
+                 "      openChat(contacts()[0].peerId);\n"
+                 "      return;\n"
+                 "    }\n"
+                 "\n"
+                 "    // Taken now: the list loads them a tick later, when a close or the\n"
+                 "    // midnight refresh may have taken the banner's state away.\n"
+                 "    const todayPeerIds = contacts().map(({peerId}) => peerId);\n"
+                 "    showPickUserPopup({\n"
+                 "      titleLangKey: 'SendMessageTitle',\n"
+                 "      peerType: ['custom'],\n"
+                 "      getMoreCustom: async() => ({result: todayPeerIds, isEnd: true}),\n"
+                 "      getSubtitleForElement: () => i18n('Suggestion.BirthdayContacts.Today'),\n"
+                 "      noSearch: true,\n"
+                 "      onSelect: ([{peerId}]) => openChat(peerId)\n"
+                 "    });\n"
+                 "  };\n")
+    tree.replace(rel,
+                 "          <PendingSuggestion.Subtitle>{i18n('Suggestion.BirthdayContacts.Subtitle')}"
+                 "</PendingSuggestion.Subtitle>\n",
+                 "          <PendingSuggestion.Subtitle>{i18n('SendMessageTitle')}</PendingSuggestion.Subtitle>\n")
+
+    # Shown whether or not Premium is for sale: the Premium gate goes, and
+    # with it the effect that followed it, now a load on mount (an effect that
+    # reads no signal runs once, as onMount does). No gift options loaded
+    # ahead for the tap, no toast that points to gifts in Settings.
+    tree.replace(rel,
+                 "import {createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show} from 'solid-js';\n",
+                 "import {createMemo, createResource, createSignal, onCleanup, onMount, Show} from 'solid-js';\n")
+    tree.replace(rel, "  const [{appConfig}] = useAppState();\n", "")
+    tree.replace(rel,
+                 "  const canLoadBirthdayContacts = () => TEST_BIRTHDAY_CONTACTS || !appConfig.premium_purchase_blocked;\n"
+                 "  const canShowBirthdayContacts = () => (\n"
+                 "    TEST_BIRTHDAY_CONTACTS || (\n"
+                 "      canLoadBirthdayContacts() &&\n"
+                 "      promoDataLoaded() &&\n",
+                 "  // pluma: whether Premium is for sale does not matter: the banner leads\n"
+                 "  // to the chat, not to a gift.\n"
+                 "  const canShowBirthdayContacts = () => (\n"
+                 "    TEST_BIRTHDAY_CONTACTS || (\n"
+                 "      promoDataLoaded() &&\n")
+    tree.replace(rel,
+                 "  createEffect(() => {\n"
+                 "    if(!canLoadBirthdayContacts()) {\n"
+                 "      ++contactBirthdaysRequest;\n"
+                 "      setContactBirthdays(undefined);\n"
+                 "      return;\n"
+                 "    }\n"
+                 "\n"
+                 "    void loadContactBirthdays();\n"
+                 "  });\n",
+                 "  // pluma: no Premium gate to follow: loaded once, and again at midnight.\n"
+                 "  onMount(() => {\n"
+                 "    void loadContactBirthdays();\n"
+                 "  });\n")
+    tree.replace(rel,
+                 "  createEffect(() => {\n"
+                 "    if(canShowBirthdayContacts() && contactBirthdays()?.today.length) {\n"
+                 "      void rootScope.managers.appGiftsManager.getStarGiftOptions().catch(() => {});\n"
+                 "    }\n"
+                 "  });\n"
+                 "\n",
+                 "  // pluma: no gift options to load ahead for the banner's tap.\n"
+                 "\n")
+    tree.replace(rel, "    toastNew({langPackKey: 'Suggestion.BirthdayContacts.Dismissed'});\n",
+                 "    // pluma: no toast that a gift can be sent later in Settings.\n")
+
+
+PROFILE = "src/components/peerProfile.tsx"
+
+
+def birthday_row(tree):
+    """The Birthday row of a profile offers a gift on the contact's birthday
+    only while Premium can be bought, as the chat's own gift entry
+    (Chat.canGiftPremium) and the Android app's profile (ProfileActivity
+    containsGift) do. Pluma has no gifts, so the row copies the date then, as
+    on any other day. The birthday banner leads to that profile in two taps."""
+    tree.replace(PROFILE,
+                 "PeerProfile.Birthday = () => {\n"
+                 "  const context = useContext(PeerProfileContext);\n",
+                 "PeerProfile.Birthday = () => {\n"
+                 "  const context = useContext(PeerProfileContext);\n"
+                 "  const appConfig = useAppConfig();\n")
+    tree.replace(PROFILE,
+                 "    if(isToday()) {\n"
+                 "      return () => showSendGiftPopup({\n",
+                 "    // pluma: no gift while Premium cannot be bought.\n"
+                 "    if(isToday() && !appConfig.premium_purchase_blocked) {\n"
+                 "      return () => showSendGiftPopup({\n")
+
+
 def patch(tree, c):
     # The upstream is the one upstream.env describes: the schema layer the
     # server speaks (ADR 0008), the version, and the toolchain the CI installs.
@@ -1071,6 +1249,10 @@ def patch(tree, c):
     for rel in ("public/site.webmanifest", "public/site_apple.webmanifest"):
         patch_manifest(tree, rel, c)
 
+    # The banner of contacts' birthdays opens the chat, not a gift.
+    birthday_banner(tree)
+    birthday_row(tree)
+
     # Pluma's name, icons, link scheme and colours.
     rebrand(tree, c)
 
@@ -1128,6 +1310,12 @@ def verify(tree, c):
         raise PatchError("SignQRCard.tsx: the QR code does not sign in with plm://login")
     if '<g id="logo"' not in sources["index.html"]:
         raise PatchError("index.html: not Pluma's logo on the sign-in page")
+
+    # The birthday banner: nothing of the gift flow or the Premium gate left.
+    for s in ("premium_purchase_blocked", "showSendGift", "popups/sendGift", "appGiftsManager",
+              "Suggestion.BirthdayContacts.Subtitle", "Suggestion.BirthdayContacts.Dismissed"):
+        if s in sources[BIRTHDAYS]:
+            raise PatchError(f"{BIRTHDAYS}: {s!r} is still there; the birthday banner must open the chat")
 
 
 def main(argv=None):
