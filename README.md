@@ -19,6 +19,7 @@ tweb has no releases, so Pluma pins a commit: [`346844bf`](https://github.com/mo
 - **App identity.** The app uses Pluma's `api_id`/`api_hash` ([`config/app.env`](config/app.env)); the page title and the installed web app are "Pluma".
 - **Brand.** Pluma's name, icons, `plm://` links and colours instead of Telegram's ([Branding](#branding)).
 - **Telegram's own services.** None are contacted (next section).
+- **Adding a set from its link.** In the pinned upstream, *Add* in a set opened by `t.me/addstickers/<name>` or `t.me/addemoji/<name>` does nothing: the set is cached under its short name and looked up under its id. The patch loads it by its id first, as Telegram's current Web K reads the set it is given.
 
 After the edits, the sources are checked again. After the build, [`ci/check_bundle.py`](ci/check_bundle.py) reads every file of the site, source maps included: the server URL, the server key, the `api_hash`, layer 228, Pluma's icons, "Sign in to Pluma" and the `plm://login` link of the QR code must be there; no Telegram datacenter address, MTProto endpoint, server key or credential may be; the code may open no WebSocket but the server's.
 

@@ -1074,6 +1074,29 @@ def patch(tree, c):
     # Pluma's name, icons, link scheme and colours.
     rebrand(tree, c)
 
+    sticker_set_toggle(tree)
+
+
+STICKERS = "src/lib/appManagers/appStickersManager.ts"
+
+
+def sticker_set_toggle(tree):
+    """Adding a set opened by its link (t.me/addstickers/<name>) does
+    nothing: the popup caches the set under its short name, and
+    toggleStickerSet looks it up under its id only, finds nothing and throws
+    before it asks the server. Telegram's own Web K reads the set it was
+    given instead since (toggleStickerSet over getCachedStickerSets, seen in
+    web.telegram.org/k on 2026-11-02). The patch loads the set by its id
+    first, which caches it there, as an installed or featured set is."""
+    tree.replace(STICKERS,
+                 "    const cacheKey = this.getCacheKey(input);\n"
+                 "    const stickerSet = this.storage.getFromCache(cacheKey);\n"
+                 "    set = stickerSet.set;\n",
+                 "    const cacheKey = this.getCacheKey(input);\n"
+                 "    // pluma: a set opened by its link is cached under its short name.\n"
+                 "    const stickerSet = this.storage.getFromCache(cacheKey) ?? await this.getStickerSet(input);\n"
+                 "    set = stickerSet.set;\n")
+
 
 def verify(tree, c):
     """Checks the result independently of how the edits were made."""

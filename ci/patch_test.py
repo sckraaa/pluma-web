@@ -307,6 +307,8 @@ APP = "src/config/app.ts"
 # pinned upstream, replacement): every one must stop the patch with an error
 # that names the file.
 DAMAGE = (
+    ("src/lib/appManagers/appStickersManager.ts", "    const stickerSet = this.storage.getFromCache(cacheKey);\n    set = stickerSet.set;",
+     "    const stickerSet = this.storage.getFromCache(cacheKey)!;\n    set = stickerSet.set;"),
     ("src/lib/mtproto/schema.ts", '"layer":228', '"layer":229'),
     ("public/version", "2.2 (676)", "2.3 (700)"),
     ("package.json", '"pnpm@11.16.0"', '"pnpm@11.17.0"'),
