@@ -580,6 +580,47 @@ THEME_SETTINGS = (
      "  baseThemeNight: 'hsla(123.870967, 26.115537%, 33.009803%, .4)',\n"),
 )
 
+# People's identity colours: the seven Telegram gives a user or chat by its
+# id, or the one a user picked (getPeerColorIndexByPeer: peer.color, else
+# id % 7), in the order of DialogColors. Web K draws each with a letter
+# avatar gradient, the same in every theme (base.scss, avatar-color: top,
+# bottom), and a name colour for names in groups and the bars of replies and
+# link previews (getPeerColorById.ts, DialogColorsFg): one for every theme,
+# unless the server's help.getPeerColors gives colours for the identity
+# (setPeerColors, replaceColors). Ids 7 and above have the server's colours
+# only and stay as they are.
+IDENTITIES = ("red", "orange", "violet", "green", "cyan", "blue", "pink")
+
+# Pluma's identity colours; the other five stay Telegram's. Blue is the
+# palette's sage and cyan a teal without Telegram's blue. A dark theme takes
+# its own name colour where Pluma's differs from the light one: blue a light
+# sage, cyan the one of Telegram's Android app at night, a teal as well
+# (upstream has no dark name colour of its own: None).
+# (colour, upstream's, Pluma's)
+IDENTITY_COLORS = {
+    "cyan": (
+        ("avatar top", "#53edd6", "#5BCBC4"),
+        ("avatar bottom", "#28c9b7", "#2C9C98"),
+        ("name", "#309EBA", "#1F8A80"),
+        ("dark name", None, "#53CCC6"),
+    ),
+    "blue": (
+        ("avatar top", "#5CAFFA", "#7FA082"),
+        ("avatar bottom", "#408ACF", "#5B7A5E"),
+        ("name", "#368AD1", "#4F6E52"),
+        ("dark name", None, "#9DBB9F"),
+    ),
+}
+_IDENTITY_KEYS = ("avatar top", "avatar bottom", "name", "dark name")
+
+# Telegram's blue avatar gradient as a plain blue, the avatar of Archived
+# Chats in the chat list and the icon of its popup: the identity's avatar
+# colours, sage. (file, identity)
+IDENTITY_AS_PLAIN = (
+    ("src/components/archiveDialog.module.scss", "blue"),
+    ("src/components/featureDetailsIconSticker.module.scss", "blue"),
+)
+
 # White text and icons on an accent fill. The dark theme's accent is a light
 # sage, so they take --on-primary-color, which themeController sets from
 # the accent: dark on a light one, white on the others. (file, rule): the
@@ -687,6 +728,84 @@ def rename_strings(tree, rel, name, renamed, left):
         raise PatchError(f"{rel}: Telegram {text.count('Telegram')} times in keys, comments and URLs, "
                          f"expected {left}; review the new ones")
     tree.write(rel, text)
+
+
+PEER_COLORS = "src/lib/appManagers/utils/peers/getPeerColorById.ts"
+_NAME_COLORS = re.compile(r"^const DialogColorsFg: Array<string\[\]> = \[(\['#[0-9A-Fa-f]{6}'\](?:, \['#[0-9A-Fa-f]{6}'\])*)\],$",
+                          re.M)
+
+
+def identity_colors(tree):
+    """People's identity colours as IDENTITY_COLORS has them: the letter
+    avatars (and the notification's picture, which reads their colours), the
+    name colours of the light themes and of the dark ones, and the places
+    that take an identity's avatar gradient as a plain colour."""
+    rel = PEER_COLORS
+    tree.expect(rel, "  DialogColors = [" + ", ".join(f"'{n}'" for n in IDENTITIES) + "] as const;\n")
+    colors = {}
+    for identity, table in IDENTITY_COLORS.items():
+        if identity not in IDENTITIES or tuple(k for k, _, _ in table) != _IDENTITY_KEYS:
+            raise PatchError(f"IDENTITY_COLORS: {identity!r}: one of {IDENTITIES}, with {_IDENTITY_KEYS}")
+        colors[identity] = {k: (old, new) for k, old, new in table}
+
+    # The letter avatars.
+    for identity, c in colors.items():
+        tree.replace("src/scss/base.scss",
+                     f'  @include avatar-color("{identity}", {c["avatar top"][0]}, {c["avatar bottom"][0]});\n',
+                     f'  @include avatar-color("{identity}", {c["avatar top"][1]}, {c["avatar bottom"][1]}); // pluma\n')
+    for plain, identity in IDENTITY_AS_PLAIN:
+        if identity not in colors:
+            raise PatchError(f"IDENTITY_AS_PLAIN: {identity!r} is not in IDENTITY_COLORS")
+        c = colors[identity]
+        tree.replace(plain, f"background: linear-gradient({c['avatar top'][0]}, {c['avatar bottom'][0]});",
+                     f"background: linear-gradient(var(--peer-avatar-{identity}-top), "
+                     f"var(--peer-avatar-{identity}-bottom)); // pluma: the {identity} identity's")
+
+    # The name colours: Pluma's of the light themes in the built-in list.
+    found = _NAME_COLORS.findall(tree.read(rel))
+    if len(found) != 1:
+        raise PatchError(f"{rel}: {len(found)} lists DialogColorsFg of one colour per identity, expected 1")
+    names = re.findall(r"'(#[0-9A-Fa-f]{6})'", found[0])
+    if len(names) != len(IDENTITIES):
+        raise PatchError(f"{rel}: DialogColorsFg has {len(names)} colours, expected {len(IDENTITIES)}")
+    old_names = list(names)
+    for identity, c in colors.items():
+        i = IDENTITIES.index(identity)
+        if names[i] != c["name"][0]:
+            raise PatchError(f"{rel}: the name colour of {identity} is {names[i]}, expected {c['name'][0]}; "
+                             "upstream changed it")
+        names[i] = c["name"][1]
+
+    def name_list(values):
+        return "const DialogColorsFg: Array<string[]> = [" + ", ".join(f"['{v}']" for v in values) + "],\n"
+
+    tree.replace(rel, name_list(old_names),
+                 f"// pluma: Pluma's {' and '.join(colors)}; the light themes' colours.\n" + name_list(names))
+    # A dark theme's own where Pluma's differ. Web K keeps one name colour
+    # for every theme and takes a dark one only from the server's
+    # help.getPeerColors. setPeerColors also writes a theme's colours over
+    # the built-in list, which the next theme would start from: it starts
+    # from a copy.
+    dark = ", ".join(f"{IDENTITIES.index(identity)}: ['{c['dark name'][1]}']" for identity, c in colors.items()
+                     if c["dark name"][1] != c["name"][1])
+    tree.replace(rel, "const _DialogColorsFg = DialogColorsFg;\n",
+                 "// pluma: a dark theme's name colours where Pluma's differ from the light\n"
+                 "// ones above.\n"
+                 f"const DialogColorsFgNight: {{[colorId: number]: string[]}} = {{{dark}}};\n"
+                 "\n"
+                 "// pluma: a copy: setPeerColors writes a theme's colours into DialogColorsFg,\n"
+                 "// and the next theme starts from the built-in ones.\n"
+                 "const _DialogColorsFg = DialogColorsFg.slice();\n")
+    tree.replace(rel,
+                 "  let newColors = replaceColors(_DialogColorsFg.slice(), peerColorOptions);\n"
+                 "  if(themeController.isNight()) {\n",
+                 "  // pluma: the theme's built-in colours, then the server's.\n"
+                 "  const isNight = themeController.isNight();\n"
+                 "  let newColors = replaceColors(\n"
+                 "    _DialogColorsFg.map((colors, colorId) => (isNight && DialogColorsFgNight[colorId]) || colors),\n"
+                 "    peerColorOptions\n"
+                 "  );\n"
+                 "  if(isNight) {\n")
 
 
 def rebrand(tree, c):
@@ -867,6 +986,9 @@ def rebrand(tree, c):
                  "      });\n"
                  "    });\n")
     tree.replace("src/helpers/rowIconBackground.ts", "  blue: '#2196F3',\n", f"  blue: '{ACCENT}', // pluma: the accent, not blue\n")
+    # People's identity colours: letter avatars, names, reply and link
+    # preview bars.
+    identity_colors(tree)
 
     base = "src/scss/base.scss"
     tree.replace(base, "  --badge-text-color: #fff;\n  --original-ripple-color: rgba(0, 0, 0, #{$hover-alpha});\n",
@@ -874,8 +996,6 @@ def rebrand(tree, c):
                  "  // pluma: what sits on an accent fill; themeController sets it per theme.\n"
                  "  --on-primary-color: #fff;\n"
                  "  --original-ripple-color: rgba(0, 0, 0, #{$hover-alpha});\n")
-    tree.replace(base, '  @include avatar-color("blue", #5CAFFA, #408ACF);\n',
-                 '  @include avatar-color("blue", #7FA082, #6F8F72); // pluma: sage, not blue\n')
     tree.replace(base, "  --avatar-color-story-unread-from: #34c76f;\n  --avatar-color-story-unread-to: #3da1fd;\n",
                  "  // pluma: sage, not green and blue.\n"
                  "  --avatar-color-story-unread-from: #9DBB9F;\n  --avatar-color-story-unread-to: #5B7A5E;\n")
@@ -893,6 +1013,15 @@ def rebrand(tree, c):
         if n != 1:
             raise PatchError(f"ON_PRIMARY: {rule!r} has {n} colours, expected 1")
         tree.replace(rel, rule, new)
+    # The feature icon's gradients are no accent fill: the glyph on them
+    # stays white, as upstream draws it and as on letter avatars (the
+    # archive's has the blue identity's colours).
+    rel = "src/components/featureDetailsIconSticker.module.scss"
+    tree.expect(rel, "  &:global(.background-gradient-", 3)
+    for gradient in ("avatar", "archive", "stories"):
+        tree.replace(rel, f"  &:global(.background-gradient-{gradient}) {{\n",
+                     f"  &:global(.background-gradient-{gradient}) {{\n"
+                     "    color: white; // pluma: a gradient, not the accent fill\n")
     tree.replace("src/scss/partials/_badge.scss",
                  "  &-primary {\n    background-color: var(--primary-color);\n  }\n",
                  "  &-primary {\n    background-color: var(--primary-color);\n    color: var(--on-primary-color); // pluma\n  }\n")
@@ -921,6 +1050,184 @@ def rebrand(tree, c):
                             ("rgba(255, 255, 255, .7)", "color-mix(in srgb, var(--on-primary-color) 70%, transparent)", 1),
                             ("rgba(255, 255, 255, .2)", "color-mix(in srgb, var(--on-primary-color) 20%, transparent)", 1),
                         ))
+
+
+# --- birthdays -----------------------------------------------------------------
+#
+# The banner above the chat list when contacts have a birthday today. Pluma
+# sells no Premium and has no gifts (help.getAppConfig sets
+# premium_purchase_blocked): upstream would hide the banner, and its tap leads
+# to a gift. Pluma shows it and its tap opens the chat (the owner's decision,
+# task 020 of the server repository); when it shows, how it looks and how it
+# closes stay as upstream has them.
+
+BIRTHDAYS = "src/components/sidebarLeft/birthdaySuggestions.tsx"
+
+# The strings the banner and its list take where upstream's offer a gift:
+# entries of lang.ts, the English that every language pack falls back to.
+BIRTHDAY_STRINGS = (
+    "  'SendMessageTitle': 'Send message',\n",
+    "  'Suggestion.BirthdayContacts.Today': 'Birthday today',\n",
+)
+
+
+def birthday_banner(tree):
+    """The banner of contacts' birthdays shows without Premium for sale. Its
+    tap opens the chat with the contact or, when several have a birthday
+    today, the list of them, where the one picked opens their chat. It
+    offers no gift: not in its subtitle, not in the toast after closing it."""
+    rel = BIRTHDAYS
+    for s in BIRTHDAY_STRINGS:
+        tree.expect("src/lang.ts", s)
+    tree.expect("src/components/popups/pickUser.tsx",
+                "export default function showPickUserPopup(options: PopupPickUserOptions) {\n")
+    tree.expect("src/lib/appImManager.ts",
+                "  public async setPeer(options: Partial<ChatSetInnerPeerOptions> = {}, animate?: boolean): Promise<boolean> {\n")
+
+    tree.replace(rel,
+                 "import showSendGiftPicker from '@components/popups/sendGiftPicker';\n"
+                 "import showSendGiftPopup from '@components/popups/sendGift';\n",
+                 "import showPickUserPopup from '@components/popups/pickUser';\n")
+    tree.replace(rel, "import {toastNew} from '@components/toast';\n", "")
+    tree.replace(rel, "import {i18n} from '@lib/langPack';\n",
+                 "import appImManager from '@lib/appImManager';\n"
+                 "import {i18n} from '@lib/langPack';\n")
+    tree.replace(rel, "import {useAppState} from '@stores/appState';\n", "")
+    tree.replace(rel,
+                 "// Preview-only: 1 opens the gift popup directly, 2+ opens the recipient picker.\n",
+                 "// Preview-only: 1 opens the chat directly, 2+ opens the list of them to pick\n"
+                 "// from (pluma: not the gift popup and the recipient picker).\n")
+
+    # The tap: the chat, not a gift.
+    tree.replace(rel,
+                 "  const nearbyContacts = createMemo(() => [\n"
+                 "    ...props.state.today,\n"
+                 "    ...props.state.yesterday,\n"
+                 "    ...props.state.tomorrow\n"
+                 "  ]);\n"
+                 "  const birthdayPeerIds = createMemo(() => new Set(nearbyContacts().map(({peerId}) => peerId)));\n"
+                 "  const yesterdayPeerIds = createMemo(() => new Set(props.state.yesterday.map(({peerId}) => peerId)));\n"
+                 "  const todayPeerIds = createMemo(() => new Set(props.state.today.map(({peerId}) => peerId)));\n"
+                 "\n"
+                 "  const openGift = (peerId: PeerId) => {\n"
+                 "    showSendGiftPopup({peerId, birthday: birthdayPeerIds().has(peerId)});\n"
+                 "  };\n"
+                 "\n"
+                 "  const onClick = () => {\n"
+                 "    if(contacts().length === 1) {\n"
+                 "      openGift(contacts()[0].peerId);\n"
+                 "      return;\n"
+                 "    }\n"
+                 "\n"
+                 "    showSendGiftPicker({\n"
+                 "      prependPeerIds: nearbyContacts().map(({peerId}) => peerId),\n"
+                 "      getSubtitleForElement: (peerId) => {\n"
+                 "        const key = todayPeerIds().has(peerId) ? 'Suggestion.BirthdayContacts.Today' :\n"
+                 "          yesterdayPeerIds().has(peerId) ? 'Suggestion.BirthdayContacts.Yesterday' :\n"
+                 "          birthdayPeerIds().has(peerId) ? 'Suggestion.BirthdayContacts.Tomorrow' : undefined;\n"
+                 "        return key ? i18n(key) : undefined;\n"
+                 "      },\n"
+                 "      onSelect: ([{peerId}]) => openGift(peerId)\n"
+                 "    });\n"
+                 "  };\n",
+                 "  // pluma: Pluma has no gifts. The banner (\"Send message\" under the\n"
+                 "  // title) opens the chat with the contact or, when several have a\n"
+                 "  // birthday today, the list of them, where the one picked opens their chat,\n"
+                 "  // as a tap in the chat list opens it (setPeer, appDialogsManager).\n"
+                 "  const openChat = (peerId: PeerId) => {\n"
+                 "    appImManager.setPeer({peerId});\n"
+                 "  };\n"
+                 "\n"
+                 "  const onClick = () => {\n"
+                 "    if(contacts().length === 1) {\n"
+                 "      openChat(contacts()[0].peerId);\n"
+                 "      return;\n"
+                 "    }\n"
+                 "\n"
+                 "    // Taken now: the list loads them a tick later, when a close or the\n"
+                 "    // midnight refresh may have taken the banner's state away.\n"
+                 "    const todayPeerIds = contacts().map(({peerId}) => peerId);\n"
+                 "    showPickUserPopup({\n"
+                 "      titleLangKey: 'SendMessageTitle',\n"
+                 "      peerType: ['custom'],\n"
+                 "      getMoreCustom: async() => ({result: todayPeerIds, isEnd: true}),\n"
+                 "      getSubtitleForElement: () => i18n('Suggestion.BirthdayContacts.Today'),\n"
+                 "      noSearch: true,\n"
+                 "      onSelect: ([{peerId}]) => openChat(peerId)\n"
+                 "    });\n"
+                 "  };\n")
+    tree.replace(rel,
+                 "          <PendingSuggestion.Subtitle>{i18n('Suggestion.BirthdayContacts.Subtitle')}"
+                 "</PendingSuggestion.Subtitle>\n",
+                 "          <PendingSuggestion.Subtitle>{i18n('SendMessageTitle')}</PendingSuggestion.Subtitle>\n")
+
+    # Shown whether or not Premium is for sale: the Premium gate goes, and
+    # with it the effect that followed it, now a load on mount (an effect that
+    # reads no signal runs once, as onMount does). No gift options loaded
+    # ahead for the tap, no toast that points to gifts in Settings.
+    tree.replace(rel,
+                 "import {createEffect, createMemo, createResource, createSignal, onCleanup, onMount, Show} from 'solid-js';\n",
+                 "import {createMemo, createResource, createSignal, onCleanup, onMount, Show} from 'solid-js';\n")
+    tree.replace(rel, "  const [{appConfig}] = useAppState();\n", "")
+    tree.replace(rel,
+                 "  const canLoadBirthdayContacts = () => TEST_BIRTHDAY_CONTACTS || !appConfig.premium_purchase_blocked;\n"
+                 "  const canShowBirthdayContacts = () => (\n"
+                 "    TEST_BIRTHDAY_CONTACTS || (\n"
+                 "      canLoadBirthdayContacts() &&\n"
+                 "      promoDataLoaded() &&\n",
+                 "  // pluma: whether Premium is for sale does not matter: the banner leads\n"
+                 "  // to the chat, not to a gift.\n"
+                 "  const canShowBirthdayContacts = () => (\n"
+                 "    TEST_BIRTHDAY_CONTACTS || (\n"
+                 "      promoDataLoaded() &&\n")
+    tree.replace(rel,
+                 "  createEffect(() => {\n"
+                 "    if(!canLoadBirthdayContacts()) {\n"
+                 "      ++contactBirthdaysRequest;\n"
+                 "      setContactBirthdays(undefined);\n"
+                 "      return;\n"
+                 "    }\n"
+                 "\n"
+                 "    void loadContactBirthdays();\n"
+                 "  });\n",
+                 "  // pluma: no Premium gate to follow: loaded once, and again at midnight.\n"
+                 "  onMount(() => {\n"
+                 "    void loadContactBirthdays();\n"
+                 "  });\n")
+    tree.replace(rel,
+                 "  createEffect(() => {\n"
+                 "    if(canShowBirthdayContacts() && contactBirthdays()?.today.length) {\n"
+                 "      void rootScope.managers.appGiftsManager.getStarGiftOptions().catch(() => {});\n"
+                 "    }\n"
+                 "  });\n"
+                 "\n",
+                 "  // pluma: no gift options to load ahead for the banner's tap.\n"
+                 "\n")
+    tree.replace(rel, "    toastNew({langPackKey: 'Suggestion.BirthdayContacts.Dismissed'});\n",
+                 "    // pluma: no toast that a gift can be sent later in Settings.\n")
+
+
+PROFILE = "src/components/peerProfile.tsx"
+
+
+def birthday_row(tree):
+    """The Birthday row of a profile offers a gift on the contact's birthday
+    only while Premium can be bought, as the chat's own gift entry
+    (Chat.canGiftPremium) and the Android app's profile (ProfileActivity
+    containsGift) do. Pluma has no gifts, so the row copies the date then, as
+    on any other day. The birthday banner leads to that profile in two taps."""
+    tree.replace(PROFILE,
+                 "PeerProfile.Birthday = () => {\n"
+                 "  const context = useContext(PeerProfileContext);\n",
+                 "PeerProfile.Birthday = () => {\n"
+                 "  const context = useContext(PeerProfileContext);\n"
+                 "  const appConfig = useAppConfig();\n")
+    tree.replace(PROFILE,
+                 "    if(isToday()) {\n"
+                 "      return () => showSendGiftPopup({\n",
+                 "    // pluma: no gift while Premium cannot be bought.\n"
+                 "    if(isToday() && !appConfig.premium_purchase_blocked) {\n"
+                 "      return () => showSendGiftPopup({\n")
 
 
 def patch(tree, c):
@@ -1071,6 +1378,10 @@ def patch(tree, c):
     for rel in ("public/site.webmanifest", "public/site_apple.webmanifest"):
         patch_manifest(tree, rel, c)
 
+    # The banner of contacts' birthdays opens the chat, not a gift.
+    birthday_banner(tree)
+    birthday_row(tree)
+
     # Pluma's name, icons, link scheme and colours.
     rebrand(tree, c)
 
@@ -1151,6 +1462,23 @@ def verify(tree, c):
         raise PatchError("SignQRCard.tsx: the QR code does not sign in with plm://login")
     if '<g id="logo"' not in sources["index.html"]:
         raise PatchError("index.html: not Pluma's logo on the sign-in page")
+    # People's identity colours: none of Telegram's that Pluma replaced is
+    # left anywhere, as a CSS colour or a number.
+    for identity, table in IDENTITY_COLORS.items():
+        kept = {new.lower() for _, _, new in table}
+        for _, old, _ in table:
+            if old is None or old.lower() in kept:
+                continue
+            token = re.compile(rf"(?<![0-9A-Fa-f]){old[1:]}(?![0-9A-Fa-f])", re.IGNORECASE)
+            for rel, text in sources.items():
+                if token.search(text):
+                    raise PatchError(f"{rel}: Telegram's {identity} identity colour {old} is still there")
+
+    # The birthday banner: nothing of the gift flow or the Premium gate left.
+    for s in ("premium_purchase_blocked", "showSendGift", "popups/sendGift", "appGiftsManager",
+              "Suggestion.BirthdayContacts.Subtitle", "Suggestion.BirthdayContacts.Dismissed"):
+        if s in sources[BIRTHDAYS]:
+            raise PatchError(f"{BIRTHDAYS}: {s!r} is still there; the birthday banner must open the chat")
 
 
 def main(argv=None):

@@ -9,6 +9,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent))
 import check_bundle  # noqa: E402
@@ -223,6 +224,24 @@ class TraceTest(unittest.TestCase):
                 self.assertEqual(patch.telegram_traces(text), [])
 
 
+class IdentityColorsTest(unittest.TestCase):
+    def test_table(self):
+        hex_color = r"\A#[0-9A-Fa-f]{6}\Z"
+        for identity, table in patch.IDENTITY_COLORS.items():
+            with self.subTest(identity=identity):
+                self.assertIn(identity, patch.IDENTITIES)
+                self.assertEqual(tuple(k for k, _, _ in table), patch._IDENTITY_KEYS)
+                for key, old, new in table:
+                    self.assertRegex(new, hex_color)
+                    # Web K has one name colour for every theme, no dark one.
+                    if key == "dark name":
+                        self.assertIsNone(old)
+                    else:
+                        self.assertRegex(old, hex_color)
+        for _, identity in patch.IDENTITY_AS_PLAIN:
+            self.assertIn(identity, patch.IDENTITY_COLORS)
+
+
 class TreeTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -298,6 +317,11 @@ STATE = "src/config/state.ts"
 SIDEBAR = "src/components/sidebarLeft/index.ts"
 BASE = "src/scss/base.scss"
 CHATLIST = "src/scss/partials/_chatlist.scss"
+BIRTHDAYS = "src/components/sidebarLeft/birthdaySuggestions.tsx"
+PROFILE = "src/components/peerProfile.tsx"
+PEER_COLORS = "src/lib/appManagers/utils/peers/getPeerColorById.ts"
+ARCHIVE = "src/components/archiveDialog.module.scss"
+FEATURE_ICON = "src/components/featureDetailsIconSticker.module.scss"
 
 DC = "src/lib/mtproto/dcConfigurator.ts"
 RSA = "src/lib/mtproto/rsaKeysManager.ts"
@@ -390,6 +414,22 @@ DAMAGE = (
      "        theme.settings = [theme.settings];\n"),
     ("src/helpers/rowIconBackground.ts", "  blue: '#2196F3',", "  blue: '#2196f3',"),
     (BASE, '@include avatar-color("blue", #5CAFFA, #408ACF);', '@include avatar-color("blue", #5CAFFA, #408ACE);'),
+    # People's identity colours: the avatars, the names, the code that
+    # applies them, the plain uses of the blue gradient, and Telegram's blue
+    # or cyan in a place the patch does not know.
+    (BASE, '@include avatar-color("cyan", #53edd6, #28c9b7);', '@include avatar-color("cyan", #53EDD6, #28C9B7);'),
+    (PEER_COLORS, "['#309EBA'], ['#368AD1']", "['#309EBA'], ['#3E88F7']"),
+    (PEER_COLORS, "['#C7508B']],", "['#C7508B'], ['#A0A0A0']],"),
+    (PEER_COLORS, "'cyan', 'blue', 'pink'] as const;", "'blue', 'cyan', 'pink'] as const;"),
+    (PEER_COLORS, "const _DialogColorsFg = DialogColorsFg;", "const _DialogColorsFg = [...DialogColorsFg];"),
+    (PEER_COLORS, "replaceColors(_DialogColorsFg.slice(), peerColorOptions);",
+     "replaceColors(_DialogColorsFg.slice(), peerColorOptions || []);"),
+    (ARCHIVE, "background: linear-gradient(#5CAFFA, #408ACF);", "background: linear-gradient(#5CAFFA 10%, #408ACF);"),
+    (FEATURE_ICON, "background: linear-gradient(#5CAFFA, #408ACF);", "background: linear-gradient(#5CAFFA, #408ACF 90%);"),
+    ("src/scss/partials/_avatar.scss", '  &[data-color="archive"] {\n',
+     '  &[data-color="saved"] {\n    --color-top: #5cafFA;\n  }\n\n  &[data-color="archive"] {\n'),
+    ("src/config/themePresets.ts", "name === 'blue') return 0x3e88f7;", "name === 'blue') return 0x368ad1;"),
+    ("src/config/themePresets.ts", "name === 'blue') return 0x3e88f7;", "name === 'blue') return 0x28C9B7;"),
     (BASE, "--avatar-color-story-unread-to: #3da1fd;", "--avatar-color-story-unread-to: #3DA1FD;"),
     (BASE, "--message-checkbox-color: #61c642;", "--message-checkbox-color: #61C642;"),
     (BASE, "--message-out-time-color: rgba(255, 255, 255, .6);", "--message-out-time-color: rgba(255, 255, 255, .5);"),
@@ -400,6 +440,10 @@ DAMAGE = (
      "    background-color: var(--primary-color) !important;\n    color: #fff !important;"),
     ("src/scss/partials/_checkbox.scss", "        stroke: #fff;\n", "        stroke: white;\n"),
     ("src/components/popups/webAppLocationAccess.module.scss", "color: var(--white);", "color: #fff;"),
+    (FEATURE_ICON, "  &:global(.background-gradient-stories) {\n",
+     "  &:global(.background-gradient-premium) {\n    background: var(--premium-gradient);\n  }\n\n"
+     "  &:global(.background-gradient-stories) {\n"),
+    (FEATURE_ICON, "&:global(.background-gradient-avatar)", "&:global(.background-gradient-peer)"),
     ("src/scss/partials/_badge.scss", "  &-primary {\n    background-color: var(--primary-color);\n",
      "  &-primary {\n    background: var(--primary-color);\n"),
     ("src/scss/partials/_slider.scss", "        .badge {\n          background-color: var(--primary-color);\n",
@@ -408,6 +452,43 @@ DAMAGE = (
      "    background: var(--chatlist-status-color);\n  }\n"),
     (CHATLIST, "          color: rgba(255, 255, 255, .7);", "          color: rgba(255, 255, 255, .6);"),
     (CHATLIST, "          --color: #fff;\n", "          --color: white;\n"),
+    # The birthday banner: its strings, what its new code calls, the places
+    # it edits, and a way to gifts the edits do not know.
+    ("src/lang.ts", "  'SendMessageTitle': 'Send message',\n", "  'SendMessageTitle': 'Send a message',\n"),
+    ("src/lang.ts", "  'Suggestion.BirthdayContacts.Today': 'Birthday today',\n",
+     "  'Suggestion.BirthdayContacts.Today': 'Today',\n"),
+    ("src/components/popups/pickUser.tsx", "export default function showPickUserPopup(options: PopupPickUserOptions) {",
+     "export default function showPickUserPopup(options: PickUserOptions) {"),
+    ("src/lib/appImManager.ts", "  public async setPeer(options: Partial<ChatSetInnerPeerOptions> = {}, animate?: boolean)",
+     "  public async setPeer(options: ChatSetPeerOptions = {}, animate?: boolean)"),
+    # The profile's Birthday row: the places it edits.
+    (PROFILE, "PeerProfile.Birthday = () => {\n  const context = useContext(PeerProfileContext);\n",
+     "PeerProfile.Birthday = () => {\n  const context = usePeerProfile();\n"),
+    (PROFILE, "    if(isToday()) {\n      return () => showSendGiftPopup({\n",
+     "    if(isToday() && canGift()) {\n      return () => showSendGiftPopup({\n"),
+    (BIRTHDAYS, "import showSendGiftPopup from '@components/popups/sendGift';",
+     "import showSendGiftPopup from '@components/popups/sendGift/index';"),
+    (BIRTHDAYS, "import {toastNew} from '@components/toast';", "import {toastNew, toastError} from '@components/toast';"),
+    (BIRTHDAYS, "import {i18n} from '@lib/langPack';", "import {i18n, I18n} from '@lib/langPack';"),
+    (BIRTHDAYS, "import {useAppState} from '@stores/appState';", "import {useAppConfig} from '@stores/appState';"),
+    (BIRTHDAYS, "import {createEffect, createMemo,", "import {createEffect, createComputed, createMemo,"),
+    (BIRTHDAYS, "// Preview-only: 1 opens the gift popup directly,", "// Preview only: 1 opens the gift popup directly,"),
+    (BIRTHDAYS, "showSendGiftPopup({peerId, birthday: birthdayPeerIds().has(peerId)});",
+     "showSendGiftPopup({peerId, birthday: true});"),
+    (BIRTHDAYS, "      prependPeerIds: nearbyContacts().map(({peerId}) => peerId),\n",
+     "      prependPeerIds: contacts().map(({peerId}) => peerId),\n"),
+    (BIRTHDAYS, "{i18n('Suggestion.BirthdayContacts.Subtitle')}", "{i18n('Suggestion.BirthdayContacts.Gift')}"),
+    (BIRTHDAYS, "  const [{appConfig}] = useAppState();", "  const [{appConfig, premium}] = useAppState();"),
+    (BIRTHDAYS, "TEST_BIRTHDAY_CONTACTS || !appConfig.premium_purchase_blocked;",
+     "TEST_BIRTHDAY_CONTACTS || !appConfig.premium_purchase_blocked && !appConfig.stars_purchase_blocked;"),
+    (BIRTHDAYS, "      canLoadBirthdayContacts() &&\n      promoDataLoaded() &&\n",
+     "      promoDataLoaded() &&\n      canLoadBirthdayContacts() &&\n"),
+    (BIRTHDAYS, "    if(!canLoadBirthdayContacts()) {\n", "    if(!canLoadBirthdayContacts() || !promoDataLoaded()) {\n"),
+    (BIRTHDAYS, "appGiftsManager.getStarGiftOptions().catch(() => {});", "appGiftsManager.getStarGiftOptions().catch(noop);"),
+    (BIRTHDAYS, "toastNew({langPackKey: 'Suggestion.BirthdayContacts.Dismissed'});",
+     "toastNew({langPackKey: 'Suggestion.BirthdayContacts.Dismissed', duration: 3000});"),
+    (BIRTHDAYS, "  const onDismissed = () => {\n",
+     "  const onDismissed = () => {\n    showSendGiftPopup({peerId: rootScope.myId});\n"),
 )
 
 
@@ -544,6 +625,79 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn(".btn-color-primary {\n  background: var(--primary-color);\n  color: var(--on-primary-color);",
                       tree.read("src/scss/partials/_button.scss"))
         self.assertNotIn("#fff", tree.read(CHATLIST).split("&.active {", 1)[1].split("\n      }\n", 1)[0])
+        # People's identity colours: blue is sage and cyan a teal, the other
+        # five stay Telegram's; a dark theme has its own name colours.
+        base = tree.read(BASE)
+        for s in ('  @include avatar-color("cyan", #5BCBC4, #2C9C98); // pluma\n',
+                  '  @include avatar-color("blue", #7FA082, #5B7A5E); // pluma\n',
+                  '  @include avatar-color("red", #FF845E, #D45246);\n',
+                  '  @include avatar-color("pink", #FF8AAC, #D95574);\n'):
+            self.assertIn(s, base)
+        colors = tree.read(PEER_COLORS)
+        for s in ("const DialogColorsFg: Array<string[]> = [['#CC5049'], ['#D67722'], ['#955CDB'], ['#40A920'], "
+                  "['#1F8A80'], ['#4F6E52'], ['#C7508B']],\n",
+                  "const DialogColorsFgNight: {[colorId: number]: string[]} = {4: ['#53CCC6'], 5: ['#9DBB9F']};\n",
+                  "const _DialogColorsFg = DialogColorsFg.slice();\n",
+                  "    _DialogColorsFg.map((colors, colorId) => (isNight && DialogColorsFgNight[colorId]) || colors),\n",
+                  "  if(isNight) {\n    newColors = replaceColors(newColors, peerColorOptions, true);\n"):
+            self.assertIn(s, colors)
+        for rel in (ARCHIVE, FEATURE_ICON):
+            self.assertIn("background: linear-gradient(var(--peer-avatar-blue-top), var(--peer-avatar-blue-bottom));",
+                          tree.read(rel))
+        # The feature icon: the glyph is dark on the dark theme's accent and
+        # white on its gradients, as on letter avatars.
+        icon = tree.read(FEATURE_ICON)
+        self.assertIn("  background-color: var(--primary-color);\n\n  color: var(--on-primary-color);\n", icon)
+        for gradient in ("avatar", "archive", "stories"):
+            self.assertIn(f"  &:global(.background-gradient-{gradient}) {{\n"
+                          "    color: white; // pluma: a gradient, not the accent fill\n", icon)
+
+        # The birthday banner: shown without Premium for sale, its tap opens
+        # the chat or the list of today's birthdays, no gift anywhere.
+        birthdays = tree.read(BIRTHDAYS)
+        for s in ("import showPickUserPopup from '@components/popups/pickUser';\n",
+                  "import appImManager from '@lib/appImManager';\n",
+                  "    TEST_BIRTHDAY_CONTACTS || (\n      promoDataLoaded() &&\n"
+                  "      !dismissedSuggestions().has(BIRTHDAY_CONTACTS_TODAY_SUGGESTION_KEY)\n",
+                  "  onMount(() => {\n    void loadContactBirthdays();\n  });\n",
+                  "      openChat(contacts()[0].peerId);\n",
+                  "    appImManager.setPeer({peerId});\n",
+                  "    const todayPeerIds = contacts().map(({peerId}) => peerId);\n",
+                  "      titleLangKey: 'SendMessageTitle',\n      peerType: ['custom'],\n",
+                  "getMoreCustom: async() => ({result: todayPeerIds, isEnd: true}),",
+                  "      onSelect: ([{peerId}]) => openChat(peerId)\n",
+                  "<PendingSuggestion.Subtitle>{i18n('SendMessageTitle')}</PendingSuggestion.Subtitle>",
+                  # Closing it stays as upstream has it.
+                  "closable={props.onDismiss}",
+                  "      rootScope.managers.appPromoManager.dismissSuggestion(BIRTHDAY_CONTACTS_TODAY_SUGGESTION_KEY);\n"):
+            self.assertIn(s, birthdays)
+        for s in ("Gift", "premium_purchase_blocked", "appConfig", "toastNew", "useAppState", "nearbyContacts",
+                  "canLoadBirthdayContacts", "createEffect"):
+            self.assertNotIn(s, birthdays)
+        self.assertNotIn("setInnerPeer", birthdays)
+        # The profile's Birthday row: a gift only while Premium is for sale.
+        profile = tree.read(PROFILE)
+        for s in ("PeerProfile.Birthday = () => {\n  const context = useContext(PeerProfileContext);\n"
+                  "  const appConfig = useAppConfig();\n",
+                  "    if(isToday() && !appConfig.premium_purchase_blocked) {\n"
+                  "      return () => showSendGiftPopup({\n"):
+            self.assertIn(s, profile)
+
+    def test_identity_colors(self):
+        # A colour is one line of the table: a dark name colour that is the
+        # light one needs none of its own.
+        key, _, name = patch.IDENTITY_COLORS["blue"][2]
+        self.assertEqual(key, "name")
+        blue = patch.IDENTITY_COLORS["blue"][:3] + (("dark name", None, name),)
+        with mock.patch.dict(patch.IDENTITY_COLORS, {"blue": blue}):
+            tree, _ = self.run_patch()
+        self.assertIn("const DialogColorsFgNight: {[colorId: number]: string[]} = {4: ['#53CCC6']};\n",
+                      tree.read(PEER_COLORS))
+        # An identity that is not one of the seven stops the patch.
+        self.tearDown()
+        with mock.patch.dict(patch.IDENTITY_COLORS, {"teal": patch.IDENTITY_COLORS["cyan"]}), \
+                self.assertRaisesRegex(patch.PatchError, "IDENTITY_COLORS: 'teal'"):
+            self.run_patch()
 
     def test_icon_changed(self):
         # An icon upstream replaced is one Pluma's render was not made for.
