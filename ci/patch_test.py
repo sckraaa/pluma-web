@@ -322,6 +322,11 @@ PROFILE = "src/components/peerProfile.tsx"
 PEER_COLORS = "src/lib/appManagers/utils/peers/getPeerColorById.ts"
 ARCHIVE = "src/components/archiveDialog.module.scss"
 FEATURE_ICON = "src/components/featureDetailsIconSticker.module.scss"
+SAVED_TAGS = "src/lib/appManagers/utils/reactions/savedTagsAvailable.ts"
+CONTEXT_MENU = "src/components/chat/contextMenu.ts"
+BUBBLES = "src/components/chat/bubbles.ts"
+TOPBAR_SEARCH = "src/components/chat/topbarSearch.tsx"
+REACTIONS_MENU = "src/components/chat/reactionsMenu.ts"
 
 DC = "src/lib/mtproto/dcConfigurator.ts"
 RSA = "src/lib/mtproto/rsaKeysManager.ts"
@@ -489,6 +494,37 @@ DAMAGE = (
      "toastNew({langPackKey: 'Suggestion.BirthdayContacts.Dismissed', duration: 3000});"),
     (BIRTHDAYS, "  const onDismissed = () => {\n",
      "  const onDismissed = () => {\n    showSendGiftPopup({peerId: rootScope.myId});\n"),
+    # Tags of Saved Messages: each gate, the imports the patch adds to, the
+    # limit of tags it leaves to the server, a gate it does not know, and the
+    # function asked outside the tag gates.
+    (CONTEXT_MENU, "      if(this.isTag && !rootScope.premium) {\n", "      if(this.isTag && !rootScope.isPremium) {\n"),
+    (CONTEXT_MENU, "          if(!rootScope.premium && tags) {\n", "          if(tags && !rootScope.premium) {\n"),
+    (CONTEXT_MENU, "import showPremiumPopup from '@components/popups/premium';\n",
+     "import showPremiumPopup from '@components/popups/premium/index';\n"),
+    (CONTEXT_MENU, "  private onAddTaskClick = async() => {\n",
+     "  private onTagsPromo = () => showPremiumPopup({feature: 'saved_tags'});\n\n  private onAddTaskClick = async() => {\n"),
+    (BUBBLES, "        if(!rootScope.premium) {\n          showPremiumPopup({feature: 'saved_tags'});\n",
+     "        if(!this.chat.isPremium) {\n          showPremiumPopup({feature: 'saved_tags'});\n"),
+    (BUBBLES, "      if(reactionsElement.getType() === ReactionLayoutType.Tag) {\n",
+     "      if(reactionsElement.getType() === ReactionLayoutType.Tag && !rootScope.premium) {\n"
+     "        showPremiumPopup({feature: 'saved_tags'});\n        return;\n      }\n\n"
+     "      if(reactionsElement.getType() === ReactionLayoutType.Tag) {\n"),
+    (TOPBAR_SEARCH, "import usePremium from '@stores/premium';\n", "import usePremium from '@stores/premium.ts';\n"),
+    (TOPBAR_SEARCH, "  const isPremium = usePremium();\n", "  const isPremium = usePremium() as () => boolean;\n"),
+    (TOPBAR_SEARCH, "    const premium = isPremium();\n", "    const premium = isPremium() || false;\n"),
+    (TOPBAR_SEARCH, "      if(!isPremium()) {\n        showPremiumPopup({feature: 'saved_tags'});\n",
+     "      if(isPremium() === false) {\n        showPremiumPopup({feature: 'saved_tags'});\n"),
+    (REACTIONS_MENU, "        rootScope.premium ? 'Reactions.Tag.Description' : 'Reactions.Tag.PremiumHint',\n",
+     "        this.premium ? 'Reactions.Tag.Description' : 'Reactions.Tag.PremiumHint',\n"),
+    (REACTIONS_MENU, "import showPremiumPopup from '@components/popups/premium';\n",
+     "import showPremiumPopup from '@components/popups/premium/index';\n"),
+    ("src/lib/appManagers/apiManagerMethods.ts",
+     "        reactions: ['reactions_user_max_default', 'reactions_user_max_premium'],\n",
+     "        reactions: 'reactions_user_max_premium',\n"),
+    ("src/lib/appManagers/appReactionsManager.ts", "      this.apiManager.getLimit('reactions'),\n",
+     "      this.apiManager.getLimit('reactions', true),\n"),
+    ("src/components/chat/chat.ts", "  public async sendReaction(options: SendReactionOptions) {\n",
+     "  public async sendReaction(options: SendReactionOptions) {\n    savedTagsAvailable();\n"),
 )
 
 
@@ -683,6 +719,33 @@ class UpstreamTest(unittest.TestCase):
                   "      return () => showSendGiftPopup({\n"):
             self.assertIn(s, profile)
 
+        # Tags of Saved Messages: every tag gate asks savedTagsAvailable,
+        # which is true; the other Premium checks of these files stay.
+        self.assertIn("export default function savedTagsAvailable() {\n  return true;\n}\n", tree.read(SAVED_TAGS))
+        imp = "import savedTagsAvailable from '@appManagers/utils/reactions/savedTagsAvailable';\n"
+        for rel in (CONTEXT_MENU, BUBBLES, TOPBAR_SEARCH, REACTIONS_MENU):
+            self.assertEqual(tree.read(rel).count(imp), 1, rel)
+        menu = tree.read(CONTEXT_MENU)
+        for s in ("      if(this.isTag && !savedTagsAvailable()) {\n",
+                  "          if(!savedTagsAvailable() && tags) {\n",
+                  "  private onAddTaskClick = async() => {\n    if(!rootScope.premium) {\n"):
+            self.assertIn(s, menu)
+        self.assertIn("        if(!savedTagsAvailable()) {\n          showPremiumPopup({feature: 'saved_tags'});\n",
+                      tree.read(BUBBLES))
+        search = tree.read(TOPBAR_SEARCH)
+        for s in ("    const premium = savedTagsAvailable();\n",
+                  "      if(!savedTagsAvailable()) {\n        showPremiumPopup({feature: 'saved_tags'});\n"):
+            self.assertIn(s, search)
+        for s in ("isPremium", "usePremium"):
+            self.assertNotIn(s, search)
+        self.assertIn("        savedTagsAvailable() ? 'Reactions.Tag.Description' : 'Reactions.Tag.PremiumHint',\n",
+                      tree.read(REACTIONS_MENU))
+        # How many tags a message takes stays the server's limit.
+        self.assertIn("      this.apiManager.getLimit('reactions'),\n",
+                      tree.read("src/lib/appManagers/appReactionsManager.ts"))
+        users = [rel for rel in tree.sources() if "savedTagsAvailable" in tree.read(rel)]
+        self.assertEqual(sorted(users), sorted([SAVED_TAGS, CONTEXT_MENU, BUBBLES, TOPBAR_SEARCH, REACTIONS_MENU]))
+
     def test_identity_colors(self):
         # A colour is one line of the table: a dark name colour that is the
         # light one needs none of its own.
@@ -722,6 +785,12 @@ class UpstreamTest(unittest.TestCase):
                 with self.assertRaises(patch.PatchError) as e:
                     self.run_patch()
                 self.assertIn(pathlib.PurePath(rel).name, str(e.exception))
+
+    def test_saved_tags_file_of_upstream(self):
+        self.written.add(SAVED_TAGS)
+        (self.root / SAVED_TAGS).write_text("export default function savedTagsAvailable() {\n  return false;\n}\n")
+        with self.assertRaisesRegex(patch.PatchError, "savedTagsAvailable.ts"):
+            self.run_patch()
 
     def test_env_file_of_upstream(self):
         self.written.add(".env.production.local")

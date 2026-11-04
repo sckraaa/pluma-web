@@ -1230,6 +1230,88 @@ def birthday_row(tree):
                  "      return () => showSendGiftPopup({\n")
 
 
+SAVED_TAGS = "src/lib/appManagers/utils/reactions/savedTagsAvailable.ts"
+SAVED_TAGS_IMPORT = "import savedTagsAvailable from '@appManagers/utils/reactions/savedTagsAvailable';\n"
+PREMIUM_POPUP_IMPORT = "import showPremiumPopup from '@components/popups/premium';\n"
+CONTEXT_MENU = "src/components/chat/contextMenu.ts"
+BUBBLES = "src/components/chat/bubbles.ts"
+TOPBAR_SEARCH = "src/components/chat/topbarSearch.tsx"
+REACTIONS_MENU = "src/components/chat/reactionsMenu.ts"
+# The files of the tag gates, the only ones that call savedTagsAvailable.
+SAVED_TAG_GATES = (CONTEXT_MENU, BUBBLES, TOPBAR_SEARCH, REACTIONS_MENU)
+
+
+def saved_tags(tree):
+    """Tags of Saved Messages (reactions in the chat with oneself, a filter of
+    its search) are open to every user: Pluma sells no Premium, and its
+    server serves the tags (messages.getSavedReactionTags,
+    updateSavedReactionTag, messages.search with saved_reaction) to everyone.
+    Upstream sends a user without Premium to the Premium popup at each place
+    a tag is put, opened, filtered by or renamed. Those places, and only
+    those, ask savedTagsAvailable() instead of the user's Premium; every other
+    Premium feature stays behind rootScope.premium. How many tags a message
+    takes is the limit of reactions (appReactionsManager.sendReaction,
+    apiManager.getLimit('reactions')), which the server's appConfig sets:
+    reactions_user_max_default for a user without Premium."""
+    if (tree.root / SAVED_TAGS).exists():
+        raise PatchError(f"{SAVED_TAGS}: upstream ships one now; review what it does")
+    tree.write(SAVED_TAGS,
+               "// pluma: tags of Saved Messages are open to every user. Pluma sells no\n"
+               "// Premium, and its server serves the tags to everyone. Only the tag gates\n"
+               "// ask this; every other Premium feature stays behind rootScope.premium.\n"
+               "export default function savedTagsAvailable() {\n"
+               "  return true;\n"
+               "}\n")
+    for rel in SAVED_TAG_GATES:
+        tree.replace(rel, PREMIUM_POPUP_IMPORT, PREMIUM_POPUP_IMPORT + SAVED_TAGS_IMPORT)
+    # How many tags a message takes: the server's limit, none of the client's.
+    tree.expect("src/lib/appManagers/apiManagerMethods.ts",
+                "        reactions: ['reactions_user_max_default', 'reactions_user_max_premium'],\n")
+    tree.expect("src/lib/appManagers/appReactionsManager.ts", "      this.apiManager.getLimit('reactions'),\n")
+
+    # A right click on a tag opens its menu (filter by it, rename it).
+    tree.replace(CONTEXT_MENU,
+                 "      if(this.isTag && !rootScope.premium) {\n"
+                 "        showPremiumPopup({feature: 'saved_tags'});\n",
+                 "      if(this.isTag && !savedTagsAvailable()) {\n"
+                 "        showPremiumPopup({feature: 'saved_tags'});\n")
+    # A tag picked in the reactions of the context menu is put on the message.
+    tree.replace(CONTEXT_MENU,
+                 "          if(!rootScope.premium && tags) {\n"
+                 "            showPremiumPopup({feature: 'saved_tags'});\n",
+                 "          if(!savedTagsAvailable() && tags) {\n"
+                 "            showPremiumPopup({feature: 'saved_tags'});\n")
+    # A click on a tag of a message filters the chat by it.
+    tree.replace(BUBBLES,
+                 "      if(reactionsElement.getType() === ReactionLayoutType.Tag) {\n"
+                 "        if(!rootScope.premium) {\n"
+                 "          showPremiumPopup({feature: 'saved_tags'});\n",
+                 "      if(reactionsElement.getType() === ReactionLayoutType.Tag) {\n"
+                 "        if(!savedTagsAvailable()) {\n"
+                 "          showPremiumPopup({feature: 'saved_tags'});\n")
+    # The tags above the search of Saved Messages: not locked, no "Unlock"
+    # tag, and a click filters by the tag. The file asked Premium for nothing
+    # else.
+    tree.replace(TOPBAR_SEARCH, PREMIUM_POPUP_IMPORT + SAVED_TAGS_IMPORT + "import usePremium from '@stores/premium';\n",
+                 PREMIUM_POPUP_IMPORT + SAVED_TAGS_IMPORT)
+    tree.replace(TOPBAR_SEARCH, "  const isPremium = usePremium();\n", "")
+    tree.replace(TOPBAR_SEARCH,
+                 "    const premium = isPremium();\n"
+                 "    element.classList.toggle('is-locked', !premium);\n",
+                 "    const premium = savedTagsAvailable();\n"
+                 "    element.classList.toggle('is-locked', !premium);\n")
+    tree.replace(TOPBAR_SEARCH,
+                 "      if(!isPremium()) {\n"
+                 "        showPremiumPopup({feature: 'saved_tags'});\n",
+                 "      if(!savedTagsAvailable()) {\n"
+                 "        showPremiumPopup({feature: 'saved_tags'});\n")
+    # The hint above the tags of the reactions menu: what tags are for, not
+    # the offer of Premium.
+    tree.replace(REACTIONS_MENU,
+                 "        rootScope.premium ? 'Reactions.Tag.Description' : 'Reactions.Tag.PremiumHint',\n",
+                 "        savedTagsAvailable() ? 'Reactions.Tag.Description' : 'Reactions.Tag.PremiumHint',\n")
+
+
 def patch(tree, c):
     # The upstream is the one upstream.env describes: the schema layer the
     # server speaks (ADR 0008), the version, and the toolchain the CI installs.
@@ -1382,6 +1464,9 @@ def patch(tree, c):
     birthday_banner(tree)
     birthday_row(tree)
 
+    # Tags of Saved Messages for every user, not only with Premium.
+    saved_tags(tree)
+
     # Pluma's name, icons, link scheme and colours.
     rebrand(tree, c)
 
@@ -1479,6 +1564,28 @@ def verify(tree, c):
               "Suggestion.BirthdayContacts.Subtitle", "Suggestion.BirthdayContacts.Dismissed"):
         if s in sources[BIRTHDAYS]:
             raise PatchError(f"{BIRTHDAYS}: {s!r} is still there; the birthday banner must open the chat")
+
+    # Tags of Saved Messages: no gate of theirs asks Premium, and nothing but
+    # the tag gates asks savedTagsAvailable, so no other Premium feature opens.
+    if "export default function savedTagsAvailable() {\n  return true;\n}\n" not in sources.get(SAVED_TAGS, ""):
+        raise PatchError(f"{SAVED_TAGS}: tags of Saved Messages are not open to every user")
+    for rel, text in sources.items():
+        if rel != SAVED_TAGS and rel not in SAVED_TAG_GATES and "savedTagsAvailable" in text:
+            raise PatchError(f"{rel}: asks savedTagsAvailable, which only the tag gates may")
+    for rel in SAVED_TAG_GATES:
+        text = sources[rel]
+        if "savedTagsAvailable()" not in text:
+            raise PatchError(f"{rel}: no tag gate asks savedTagsAvailable")
+        gates = re.findall(r"if\(([^\n]*)\) \{\n\s*showPremiumPopup\(\{feature: 'saved_tags'\}\);", text)
+        if text.count("feature: 'saved_tags'") != len(gates) + (rel == REACTIONS_MENU):
+            raise PatchError(f"{rel}: a way to the Premium popup of tags the patch does not know")
+        for condition in gates:
+            if "savedTagsAvailable()" not in condition or re.search(r"premium", condition, re.IGNORECASE):
+                raise PatchError(f"{rel}: the tag gate if({condition}) still asks Premium")
+    if re.search(r"(?i)premium[^\n]*'Reactions\.Tag\.Description'", sources[REACTIONS_MENU]):
+        raise PatchError(f"{REACTIONS_MENU}: the hint of tags still asks Premium")
+    if "isPremium" in sources[TOPBAR_SEARCH] or "usePremium" in sources[TOPBAR_SEARCH]:
+        raise PatchError(f"{TOPBAR_SEARCH}: the tags of the search still ask Premium")
 
 
 def main(argv=None):
