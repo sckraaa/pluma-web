@@ -1312,6 +1312,146 @@ def saved_tags(tree):
                  "        savedTagsAvailable() ? 'Reactions.Tag.Description' : 'Reactions.Tag.PremiumHint',\n")
 
 
+# --- links -----------------------------------------------------------------------
+#
+# pluma.chat is Pluma's link host, as t.me is Telegram's (task 026 of the
+# server repository): the server gives its invite links and me_url_prefix on
+# it. The client opens pluma.chat links inside the app as it opens t.me ones,
+# and the links it makes itself for the user to copy, share, see or scan are
+# pluma.chat ones. Web K ignores me_url_prefix and builds them from literals.
+# t.me, telegram.me and their subdomains stay internal hosts, as upstream has
+# them.
+
+LINK_HOST = "pluma.chat"
+LINK_HOST_MATCH = "src/lib/richTextProcessor/matchTelegramUrlHost.ts"
+# The pages of the site pluma.chat itself: its root and the first segments
+# of its paths. Such a link opens in the browser as any site's does, not as a
+# username; the same list in every client (task 026 of the server repository).
+LINK_SITE_PATHS = ("iphone", "ipad", "android", "mac", "windows", "linux", "web", "pero", "app", "en", "dl",
+                   "ios", "collect", "assets", "_l", ".well-known",
+                   "favicon.svg", "og.png", "apple-touch-icon.png", "404.html", "progress.json")
+LINK_SITE_PATHS_TS = ("const PLUMA_SITE_PATHS = new Set([" + ", ".join(f"'{p}'" for p in LINK_SITE_PATHS)
+                      + "]);\n")
+LINK_SITE_CHECK = ("  if(matchUrlHost(url, [PLUMA_LINK_HOST])?.subdomain === '') {\n"
+                   "    // pluma: the site's own pages (its root, its sections, its files) open in the browser\n"
+                   "    const first = url.pathname.split('/')[1].toLowerCase();\n"
+                   "    if(!first || PLUMA_SITE_PATHS.has(first)) {\n"
+                   "      return;\n"
+                   "    }\n"
+                   "\n"
+                   "    return {prefix: undefined};\n"
+                   "  }\n")
+
+# The links the client makes: (file, text, occurrences); the t.me/ in the
+# text becomes pluma.chat/.
+LINK_BUILDERS = (
+    # The profile's username and t.me links (Settings, the chat's info).
+    ("src/helpers/dom/anchorCopy.ts", "const T_ME = 'https://t.me/';", 1),
+    # Message links: Copy Link of the context menu and of the forward popup.
+    (CONTEXT_MENU, "    let url = 'https://t.me/';\n", 1),
+    ("src/components/popups/forward.tsx", "    let url = 'https://t.me/';\n", 1),
+    # The link row of a group's or channel's info (and of a topic's).
+    (PROFILE, "      let url = 't.me/';\n", 1),
+    (PROFILE, "        url: 't.me/' + usernames[0],\n", 1),
+    # QR codes of the My QR code popup: username, phone, channel.
+    ("src/helpers/qrCode/paintQrCode.ts", "  return `https://t.me/${username}`;\n", 1),
+    ("src/components/popups/myQrCode.tsx", "return `https://t.me/+${(self as User.user).phone ?? ''}`;", 1),
+    ("src/components/popups/myQrCode.tsx", "    return `https://t.me/c/${peerId.toChatId()}`;\n", 1),
+    # Stories, story albums and gift collections of a profile.
+    ("src/components/stories/profileList.tsx", "copyTextToClipboard(`https://t.me/${username}/s/${this.storyItem.id}`);", 1),
+    ("src/components/stories/profileList.tsx", "copyTextToClipboard(`https://t.me/${username}/a/${id}`);", 1),
+    ("src/components/stories/viewer.tsx",
+     "copyTextToClipboard(`https://t.me/${getPeerActiveUsernames(peer)[0]}/s/${currentStory().id}`);", 1),
+    ("src/components/stargifts/profileList.tsx", "copyTextToClipboard(`https://t.me/${username}/c/${id}`)", 1),
+    # Sticker and emoji sets.
+    ("src/components/popups/stickers.tsx", "const prefix = `https://t.me/${isEmojis ? 'addemoji' : 'addstickers'}/`;", 1),
+    # A public chat's link as an invite link row, and the prefix of the
+    # public link field of a group or channel.
+    ("src/components/sidebarRight/tabs/chatInviteLinkShared.ts",
+     "this.setUrl(isUsername ? 't.me/' + username : chatInvite.link);", 1),
+    ("src/components/sidebarRight/tabs/chatType.tsx", "    const placeholder = 't.me/';\n", 1),
+    # The recent actions of a chat: its public link changed (shown, linked
+    # and copied).
+    ("src/components/chat/bubbleParts/adminLogsResolver/index.tsx", "t.me/${action.", 4),
+    # The share link of a channel's live stream.
+    ("src/lib/rtmp/url.ts", "`https://t.me/${username}?livestream`", 1),
+    ("src/lib/rtmp/url.ts", "`https://t.me/c/${chat.id}?livestream`", 1),
+    # The channel post of a giveaway in a transaction.
+    ("src/components/popups/starsPay.tsx", "`https://t.me/c/${peerId.toChatId()}/${serverMsgId}`", 1),
+    # The link of a new bot, under its username.
+    ("src/components/popups/createBot/CreateBotPopup.tsx", "                  t.me/{fullUsername()}\n", 1),
+    # The built-in English strings that name the public link's form.
+    ("src/lang.ts", "'Reserve up to %d t.me/username links'", 1),
+    ("src/lang.ts", "'Public links such as t.me/title'", 1),
+)
+
+# The Telegram link hosts left in the code (comments aside), by file: the
+# number of t.me, telegram.me and telegram.dog in each. A new one upstream
+# stops the patch until someone decides whether it is a link the client
+# makes (LINK_BUILDERS) or one of these.
+LINK_KEEP = {
+    # The host list itself: t.me and telegram.me stay internal.
+    LINK_HOST_MATCH: 2,
+    # Turned back into an in-app route at once (wrapUrl), never shown: a
+    # mention, a topic's anchor, a link a mini app asks to open.
+    "src/lib/richTextProcessor/wrapRichText.ts": 1,
+    "src/lib/richTextProcessor/wrapTopicThreadAnchor.ts": 1,
+    "src/helpers/getWebViewTgLink.ts": 1,
+    # Telegram's own: gift codes, NFT gifts, styles, BotFather, its tips
+    # channel and its account (frozen accounts).
+    "src/lang.ts": 2,
+    "src/components/popups/giftLink.tsx": 2,
+    "src/components/popups/starGiftInfo.tsx": 2,
+    "src/components/stargifts/stargiftsGrid.tsx": 2,
+    "src/components/premium/promoSlideTab.tsx": 1,
+    "src/components/popups/starsPay.tsx": 1,
+    "src/components/popups/aiEditorPopup/styleTab.tsx": 1,
+    "src/components/sidebarRight/tabs/editBot.tsx": 1,
+    "src/components/popups/frozen.tsx": 1,
+    # The popup sandbox's sample data (a development page).
+    "src/components/popupSandbox/fixtures.ts": 1,
+    "src/components/popupSandbox/mockManagers.ts": 1,
+    "src/components/popupSandbox/stories/calls.ts": 2,
+    "src/components/popupSandbox/stories/chat.ts": 1,
+    "src/components/popupSandbox/stories/featureDetails.ts": 1,
+}
+_TELEGRAM_LINK_HOST = re.compile(r"(?<![\w.-])(?:t|telegram)\.(?:me|dog)(?![\w-])")
+
+
+def link_host(tree):
+    # The host is Pluma's own, as t.me is Telegram's: the host itself only,
+    # since its subdomains (web.pluma.chat) are sites, not the usernames that
+    # durov.t.me spells.
+    tree.replace(LINK_HOST_MATCH, "export const TELESCOPE_LINK_HOST = 'telesco.pe';\n",
+                 "export const TELESCOPE_LINK_HOST = 'telesco.pe';\n"
+                 "// pluma: Pluma's link host, as t.me is Telegram's, and the paths of its site.\n"
+                 f"export const PLUMA_LINK_HOST = '{LINK_HOST}';\n"
+                 + LINK_SITE_PATHS_TS)
+    tree.expect(LINK_HOST_MATCH, "const TELEGRAM_LINK_HOSTS = ['t.me', 'telegram.me'];\n")
+    tree.replace(LINK_HOST_MATCH,
+                 "export default function matchTelegramUrlHost(url: URL): {prefix?: string} | undefined {\n"
+                 "  const match = matchUrlHost(url, TELEGRAM_LINK_HOSTS);\n",
+                 "export default function matchTelegramUrlHost(url: URL): {prefix?: string} | undefined {\n"
+                 "  // pluma: the exact host, never a subdomain, which is a site, not a user\n"
+                 + LINK_SITE_CHECK +
+                 "\n"
+                 "  const match = matchUrlHost(url, TELEGRAM_LINK_HOSTS);\n")
+    # Every Telegram link host the app knows goes through it: wrapUrl (links
+    # in messages, appImManager.openUrl, #?tgaddr=) and the anchors' handlers.
+    for rel in ("src/lib/richTextProcessor/wrapUrl.ts", "src/helpers/addAnchorListener.ts"):
+        tree.expect(rel, "matchTelegramUrlHost(")
+
+    for rel, text, count in LINK_BUILDERS:
+        tree.replace(rel, text, text.replace("t.me/", f"{LINK_HOST}/"), count)
+    # The link row of a private group's or channel's info shows its invite
+    # link from the point where t.me/ starts, which a pluma.chat link has
+    # not (indexOf -1: the last character only).
+    tree.replace(PROFILE,
+                 "        url: exportedInvite.link.slice(exportedInvite.link.indexOf('t.me/'))\n",
+                 "        // pluma: the link as the server made it, without the scheme\n"
+                 "        url: exportedInvite.link.replace(/^https?:\\/\\//, '')\n")
+
+
 def patch(tree, c):
     # The upstream is the one upstream.env describes: the schema layer the
     # server speaks (ADR 0008), the version, and the toolchain the CI installs.
@@ -1470,6 +1610,9 @@ def patch(tree, c):
     # Pluma's name, icons, link scheme and colours.
     rebrand(tree, c)
 
+    # pluma.chat links instead of t.me ones.
+    link_host(tree)
+
     sticker_set_toggle(tree)
 
 
@@ -1586,6 +1729,24 @@ def verify(tree, c):
         raise PatchError(f"{REACTIONS_MENU}: the hint of tags still asks Premium")
     if "isPremium" in sources[TOPBAR_SEARCH] or "usePremium" in sources[TOPBAR_SEARCH]:
         raise PatchError(f"{TOPBAR_SEARCH}: the tags of the search still ask Premium")
+
+    # Links: pluma.chat is a link host of the app, its exact host only, and
+    # no Telegram link host is left but the ones LINK_KEEP knows.
+    match = sources[LINK_HOST_MATCH]
+    if (f"export const PLUMA_LINK_HOST = '{LINK_HOST}';\n" not in match
+            or "  if(matchUrlHost(url, [PLUMA_LINK_HOST])?.subdomain === '') {\n" not in match):
+        raise PatchError(f"{LINK_HOST_MATCH}: {LINK_HOST} is not a link host of the app")
+    if match.count(LINK_SITE_PATHS_TS) != 1 or match.count(LINK_SITE_CHECK) != 1:
+        raise PatchError(f"{LINK_HOST_MATCH}: the pages of the site {LINK_HOST} would open as usernames")
+    if re.search(r"const TELEGRAM_LINK_HOSTS = [^\n]*pluma", match):
+        raise PatchError(f"{LINK_HOST_MATCH}: {LINK_HOST} must not take subdomains as usernames")
+    for rel, text in sources.items():
+        found = len(_TELEGRAM_LINK_HOST.findall(_COMMENT.sub("", text)))
+        if found != LINK_KEEP.get(rel, 0):
+            raise PatchError(f"{rel}: {found} Telegram link hosts (t.me), expected {LINK_KEEP.get(rel, 0)}; "
+                             f"a link the client makes is {LINK_HOST}")
+    if "exportedInvite.link.indexOf(" in sources[PROFILE]:
+        raise PatchError(f"{PROFILE}: the invite link row cuts the link at t.me/")
 
 
 def main(argv=None):

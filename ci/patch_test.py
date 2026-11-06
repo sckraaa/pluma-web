@@ -327,6 +327,7 @@ CONTEXT_MENU = "src/components/chat/contextMenu.ts"
 BUBBLES = "src/components/chat/bubbles.ts"
 TOPBAR_SEARCH = "src/components/chat/topbarSearch.tsx"
 REACTIONS_MENU = "src/components/chat/reactionsMenu.ts"
+MATCH_HOST = "src/lib/richTextProcessor/matchTelegramUrlHost.ts"
 
 DC = "src/lib/mtproto/dcConfigurator.ts"
 RSA = "src/lib/mtproto/rsaKeysManager.ts"
@@ -525,6 +526,19 @@ DAMAGE = (
      "      this.apiManager.getLimit('reactions', true),\n"),
     ("src/components/chat/chat.ts", "  public async sendReaction(options: SendReactionOptions) {\n",
      "  public async sendReaction(options: SendReactionOptions) {\n    savedTagsAvailable();\n"),
+    # Links: the host check, the hosts it is given, the links the client
+    # makes, the invite link row, and a Telegram link host the patch does
+    # not know (a new one, one more of a kept kind).
+    (MATCH_HOST, "  const match = matchUrlHost(url, TELEGRAM_LINK_HOSTS);\n",
+     "  const match = matchUrlHost(url, TELEGRAM_LINK_HOSTS, true);\n"),
+    (MATCH_HOST, "const TELEGRAM_LINK_HOSTS = ['t.me', 'telegram.me'];", "const TELEGRAM_LINK_HOSTS = ['t.me'];"),
+    ("src/helpers/addAnchorListener.ts", "const match = matchTelegramUrlHost(u);", "const match = matchUrlHost(u, ['t.me']);"),
+    ("src/helpers/dom/anchorCopy.ts", "const T_ME = 'https://t.me/';", "const T_ME = 'https://t.me/' as const;"),
+    ("src/components/chat/bubbleParts/adminLogsResolver/index.tsx", "lines.push(`https://t.me/${action.new_value}`);",
+     "lines.push('https://t.me/' + action.new_value);"),
+    (PROFILE, "exportedInvite.link.indexOf('t.me/')", "exportedInvite.link.indexOf('/t.me/')"),
+    ("src/components/popups/forward.tsx", "    copyTextToClipboard(url);\n", "    copyTextToClipboard(url || 'https://t.me/');\n"),
+    ("src/helpers/getWebViewTgLink.ts", "return 'https://t.me/' + ", "return 'https://telegram.me/' && 'https://t.me/' + "),
 )
 
 
@@ -745,6 +759,36 @@ class UpstreamTest(unittest.TestCase):
                       tree.read("src/lib/appManagers/appReactionsManager.ts"))
         users = [rel for rel in tree.sources() if "savedTagsAvailable" in tree.read(rel)]
         self.assertEqual(sorted(users), sorted([SAVED_TAGS, CONTEXT_MENU, BUBBLES, TOPBAR_SEARCH, REACTIONS_MENU]))
+
+        # Links: pluma.chat is a link host of the app, its exact host only,
+        # beside t.me and telegram.me; the links the client makes are on it.
+        match = tree.read(MATCH_HOST)
+        for s in ("export const PLUMA_LINK_HOST = 'pluma.chat';\n",
+                  "  if(matchUrlHost(url, [PLUMA_LINK_HOST])?.subdomain === '') {\n"
+                  "    // pluma: the site's own pages (its root, its sections, its files) open in the browser\n"
+                  "    const first = url.pathname.split('/')[1].toLowerCase();\n"
+                  "    if(!first || PLUMA_SITE_PATHS.has(first)) {\n      return;\n    }\n\n"
+                  "    return {prefix: undefined};\n  }\n\n"
+                  "  const match = matchUrlHost(url, TELEGRAM_LINK_HOSTS);\n",
+                  "const TELEGRAM_LINK_HOSTS = ['t.me', 'telegram.me'];\n"):
+            self.assertIn(s, match)
+        # The pages of the site pluma.chat open in the browser: the same list
+        # as the other clients have.
+        self.assertIn("const PLUMA_SITE_PATHS = new Set(['iphone', 'ipad', 'android', 'mac', 'windows', 'linux', "
+                      "'web', 'pero', 'app', 'en', 'dl', 'ios', 'collect', 'assets', '_l', '.well-known', "
+                      "'favicon.svg', 'og.png', 'apple-touch-icon.png', '404.html', 'progress.json']);\n", match)
+        self.assertIn("const T_ME = 'https://pluma.chat/';", tree.read("src/helpers/dom/anchorCopy.ts"))
+        self.assertIn("    let url = 'https://pluma.chat/';\n", menu)
+        self.assertIn("  return `https://pluma.chat/${username}`;\n", tree.read("src/helpers/qrCode/paintQrCode.ts"))
+        self.assertEqual(tree.read("src/components/chat/bubbleParts/adminLogsResolver/index.tsx")
+                         .count("pluma.chat/${action."), 4)
+        self.assertIn("        url: exportedInvite.link.replace(/^https?:\\/\\//, '')\n", profile)
+        self.assertIn("'GroupDescription3': 'Public links such as pluma.chat/title',", lang)
+        # Kept: the links turned back into an in-app route, and Telegram's own.
+        self.assertIn("element = wrapTelegramUrlToAnchor('t.me/' + username);",
+                      tree.read("src/lib/richTextProcessor/wrapRichText.ts"))
+        self.assertIn("'https://t.me/giftcode/' + slug", tree.read("src/components/popups/giftLink.tsx"))
+        self.assertIn("'EditBot.Buttons.Caption': 'Use [@BotFather](https://t.me/botfather) to manage this bot.',", lang)
 
     def test_identity_colors(self):
         # A colour is one line of the table: a dark name colour that is the
