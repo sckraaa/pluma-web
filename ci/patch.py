@@ -1312,6 +1312,75 @@ def saved_tags(tree):
                  "        savedTagsAvailable() ? 'Reactions.Tag.Description' : 'Reactions.Tag.PremiumHint',\n")
 
 
+# --- premium stickers ---------------------------------------------------------
+#
+# A premium sticker (a document with video_thumbs, getStickerEffectThumb) is
+# sent and played by every user, as with Premium in Telegram (task 058 of the
+# server repository): Pluma sells no Premium and the owner reported the gate as
+# a defect. premium_purchase_blocked, which the server sends, even hides such
+# stickers from the sets (tabs/stickers.ts, isPremiumFeaturesHidden). The
+# recipient plays the effect from the document alone (wrappers/sticker.ts:742,
+# unless the server sends nopremium, which Pluma's does not). Only the places
+# below ask premiumStickersAvailable(); the Premium effects of the send menu
+# and custom emoji stay as they are.
+
+PREMIUM_STICKERS = "src/lib/appManagers/utils/stickers/premiumStickersAvailable.ts"
+PREMIUM_STICKERS_IMPORT = "import premiumStickersAvailable from '@appManagers/utils/stickers/premiumStickersAvailable';\n"
+EFFECT_THUMB_IMPORT = "import getStickerEffectThumb from '@appManagers/utils/stickers/getStickerEffectThumb';\n"
+# (file, upstream, Pluma)
+PREMIUM_STICKER_GATES = (
+    # Sending from the panel, the suggestions and a message: the Premium popup.
+    ("src/components/chat/input.ts",
+     "    if(document.sticker && getStickerEffectThumb(document) && !rootScope.premium && !ignoreNoPremium) {\n",
+     "    if(document.sticker && getStickerEffectThumb(document) && !premiumStickersAvailable() && !rootScope.premium && !ignoreNoPremium) {\n"),
+    # A forward: the local copy without the effect.
+    ("src/lib/appManagers/appMessagesManager.ts",
+     "        if(document.sticker && !this.rootScope.premium) {\n",
+     "        if(document.sticker && !premiumStickersAvailable() && !this.rootScope.premium) {\n"),
+    # The sets of the panel leave them out while Premium cannot be bought.
+    ("src/components/emoticonsDropdown/tabs/stickers.ts",
+     "        if(isPremiumFeaturesHidden && getStickerEffectThumb(document)) {\n",
+     "        if(isPremiumFeaturesHidden && !premiumStickersAvailable() && getStickerEffectThumb(document)) {\n"),
+    # Stickers found for an emoji.
+    ("src/lib/appManagers/appStickersManager.ts",
+     "          (excludePremiumEffectStickers && !this.rootScope.premium && getStickerEffectThumb(sticker))) {\n",
+     "          (excludePremiumEffectStickers && !premiumStickersAvailable() && !this.rootScope.premium && getStickerEffectThumb(sticker))) {\n"),
+    # The lock on them.
+    ("src/components/wrappers/sticker.ts",
+     "  const willHaveLock = effectThumb && withLock;\n",
+     "  const willHaveLock = effectThumb && withLock && !premiumStickersAvailable();\n"),
+)
+
+
+def premium_stickers(tree):
+    """Premium stickers for every user, as with Premium; see the note above."""
+    if (tree.root / PREMIUM_STICKERS).exists():
+        raise PatchError(f"{PREMIUM_STICKERS}: upstream ships one now; review what it does")
+    tree.write(PREMIUM_STICKERS,
+               "// pluma: premium stickers are open to every user. Pluma sells no Premium.\n"
+               "// Only the gates of premium stickers ask this; everything else stays\n"
+               "// behind rootScope.premium.\n"
+               "export default function premiumStickersAvailable() {\n"
+               "  return true;\n"
+               "}\n")
+    for rel, old, new in PREMIUM_STICKER_GATES:
+        tree.replace(rel, EFFECT_THUMB_IMPORT, EFFECT_THUMB_IMPORT + PREMIUM_STICKERS_IMPORT)
+        tree.replace(rel, old, new)
+
+
+def verify_premium_stickers(tree, sources):
+    if "export default function premiumStickersAvailable() {\n  return true;\n}\n" not in tree.read(PREMIUM_STICKERS):
+        raise PatchError(f"{PREMIUM_STICKERS}: premiumStickersAvailable() does not return true")
+    gates = {rel for rel, _, _ in PREMIUM_STICKER_GATES}
+    for rel, text in sources.items():
+        if rel != PREMIUM_STICKERS and rel not in gates and "premiumStickersAvailable" in text:
+            raise PatchError(f"{rel}: asks premiumStickersAvailable, which only the gates of premium stickers may")
+    for rel, old, new in PREMIUM_STICKER_GATES:
+        text = sources[rel]
+        if old in text or new not in text or text.count(PREMIUM_STICKERS_IMPORT) != 1:
+            raise PatchError(f"{rel}: a gate of premium stickers still asks Premium")
+
+
 # --- links -----------------------------------------------------------------------
 #
 # pluma.chat is Pluma's link host, as t.me is Telegram's (task 026 of the
@@ -1607,6 +1676,9 @@ def patch(tree, c):
     # Tags of Saved Messages for every user, not only with Premium.
     saved_tags(tree)
 
+    # Premium stickers for every user.
+    premium_stickers(tree)
+
     # Pluma's name, icons, link scheme and colours.
     rebrand(tree, c)
 
@@ -1729,6 +1801,8 @@ def verify(tree, c):
         raise PatchError(f"{REACTIONS_MENU}: the hint of tags still asks Premium")
     if "isPremium" in sources[TOPBAR_SEARCH] or "usePremium" in sources[TOPBAR_SEARCH]:
         raise PatchError(f"{TOPBAR_SEARCH}: the tags of the search still ask Premium")
+
+    verify_premium_stickers(tree, sources)
 
     # Links: pluma.chat is a link host of the app, its exact host only, and
     # no Telegram link host is left but the ones LINK_KEEP knows.
