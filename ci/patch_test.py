@@ -899,6 +899,14 @@ class UpstreamTest(unittest.TestCase):
                     self.run_patch()
                 self.assertIn(pathlib.PurePath(rel).name, str(e.exception))
 
+    def test_no_gift_entries(self):
+        tree, _ = self.run_patch()
+        self.assertIn("const hasGift = false;", tree.read("src/components/chat/input.ts"))
+        self.assertNotIn("hasGift = good", tree.read("src/components/chat/input.ts"))
+        links = tree.read("src/lib/internalLinkProcessor.ts")
+        self.assertNotIn("return showSendGiftPicker();", links)
+        self.assertNotIn("return showSendGiftPopup(", links)
+
     def test_premium_stickers(self):
         tree, _ = self.run_patch()
         self.assertIn("export default function premiumStickersAvailable() {\n  return true;\n}\n", tree.read(patch.PREMIUM_STICKERS))

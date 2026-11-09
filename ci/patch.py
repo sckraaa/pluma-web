@@ -1933,6 +1933,20 @@ PREMIUM_FOR_EVERYONE_EDITS = (
      "    {id: 'emoji', icon: 'smile', iconClass: styles.iconEmoji, title: 'Emoji'},\n"
      "    {id: 'gifts', icon: 'gift', iconClass: styles.iconGifts, title: 'StarGiftTitle'}\n",
      "    {id: 'emoji', icon: 'smile', iconClass: styles.iconEmoji, title: 'Emoji'} // pluma: no gifts panel (ADR 0041)\n"),
+    # The side button of the plate of a channel the user cannot post in, and
+    # the links to the store.
+    ("src/components/chat/input.ts",
+     "        const hasGift = good && isBroadcast;\n",
+     "        const hasGift = false; // pluma: no gifts (ADR 0041)\n"),
+    ("src/lib/internalLinkProcessor.ts",
+     "          case 'send-gift':\n"
+     "            return showSendGiftPicker();\n"
+     "          case 'send-gift/self':\n"
+     "            return showSendGiftPopup({peerId: rootScope.myId});\n",
+     "          // pluma: no gifts (ADR 0041)\n"
+     "          case 'send-gift':\n"
+     "          case 'send-gift/self':\n"
+     "            return;\n"),
     # Boosts do not exist here: nothing waits for a level of a channel, no
     # screen, prompt or link offers one.
     ("src/components/chat/topbar.ts",
