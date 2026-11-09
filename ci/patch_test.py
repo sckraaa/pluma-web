@@ -561,6 +561,8 @@ DAMAGE = (
      "import askQuestion, {openTelegramFaq as openFaq} from '@components/askQuestion';"),
     (patch.SETTINGS, "{/* help, the way tdesktop ends its main settings */}", "{/* help */}"),
     (patch.SETTINGS_SEARCH, "{id: 'AppSettingsTab:TelegramFaq', sectionId: 'AppSettingsTab',", "{id: 'AppSettingsTab:Faq', sectionId: 'AppSettingsTab',"),
+    *((patch.SETTINGS_SEARCH, f"{{id: 'AppSettingsTab:{key}', sectionId: 'AppSettingsTab',",
+       f"{{id: 'AppSettingsTab:{key}', sectionId:  'AppSettingsTab',") for key in patch.SETTINGS_SEARCH_SALE_ROWS),
     ("src/components/chat/bubbleParts/adminLogsResolver/index.tsx", "lines.push(`https://t.me/${action.new_value}`);",
      "lines.push('https://t.me/' + action.new_value);"),
     (PROFILE, "exportedInvite.link.indexOf('t.me/')", "exportedInvite.link.indexOf('/t.me/')"),
@@ -827,6 +829,13 @@ class UpstreamTest(unittest.TestCase):
             self.assertNotIn(s, settings)
         self.assertIn("<span dir=\"ltr\">{getAppVersionText()}</span>", settings)
         self.assertNotIn("TelegramFaq", tree.read(patch.SETTINGS_SEARCH))
+        # What Settings hides while Premium cannot be bought is not in its search.
+        for key in patch.SETTINGS_SEARCH_SALE_ROWS:
+            self.assertNotIn(f"AppSettingsTab:{key}'", tree.read(patch.SETTINGS_SEARCH))
+        # Round videos have no button of their text, and gifts no entry.
+        self.assertIn("    if(false) { // pluma: the server has no transcription to offer\n      wrapRoundVideoBubble({\n",
+                      tree.read(BUBBLES))
+        self.assertNotIn("id: 'gifts'", tree.read("src/components/popups/myQrCode.tsx"))
         self.assertIn("  return `https://pluma.chat/${username}`;\n", tree.read("src/helpers/qrCode/paintQrCode.ts"))
         self.assertEqual(tree.read("src/components/chat/bubbleParts/adminLogsResolver/index.tsx")
                          .count("pluma.chat/${action."), 4)

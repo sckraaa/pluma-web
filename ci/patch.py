@@ -1887,6 +1887,32 @@ PREMIUM_FOR_EVERYONE_EDITS = (
     ("src/components/chat/bubbles.ts",
      "              canTranscribeVoice: true,\n              translatableParams,\n",
      "              canTranscribeVoice: false, // pluma: the server has no transcription to offer\n              translatableParams,\n"),
+    # A round video's button of its text is what wrapRoundVideoBubble adds.
+    ("src/components/chat/bubbles.ts",
+     "    if(isRound) {\n      wrapRoundVideoBubble({\n",
+     "    if(false) { // pluma: the server has no transcription to offer\n      wrapRoundVideoBubble({\n"),
+    # The other way to an emoji status: the menu of a custom emoji.
+    ("src/helpers/dom/createStickersContextMenu.ts",
+     "    verify: () => !!(rootScope.premium && doc)\n",
+     "    verify: () => false // pluma: the server does not serve account.updateEmojiStatus\n"),
+    # Gifts are sold for Stars, which do not exist here. tweb ignores the
+    # stargifts_blocked of the app config, so its entries stay without an edit.
+    ("src/components/chat/topbar.ts",
+     "      verify: async() => (\n"
+     "        this.chat.isChannel || (this.chat.peerId.isUser() && !this.chat.isBot && "
+     "(await this.managers.appUsersManager.isRegularUser(this.peerId)))\n"
+     "      ) && !(this.chat.type === ChatType.Logs)\n",
+     "      verify: async() => false // pluma: no gifts (ADR 0041)\n"),
+    ("src/components/peerProfile.tsx",
+     "    verify: async() => isUser ?\n"
+     "      await rootScope.managers.appUsersManager.isRegularUser(peerId.toUserId()) :\n"
+     "      isBroadcast() && !context.isTopic\n",
+     "    verify: async() => false // pluma: no gifts (ADR 0041)\n"),
+    # The panel of collectibles in the QR code screen, whose "Browse Gifts" opens the store.
+    ("src/components/popups/myQrCode.tsx",
+     "    {id: 'emoji', icon: 'smile', iconClass: styles.iconEmoji, title: 'Emoji'},\n"
+     "    {id: 'gifts', icon: 'gift', iconClass: styles.iconGifts, title: 'StarGiftTitle'}\n",
+     "    {id: 'emoji', icon: 'smile', iconClass: styles.iconEmoji, title: 'Emoji'} // pluma: no gifts panel (ADR 0041)\n"),
     # Boosts do not exist here: nothing waits for a level of a channel, no
     # screen, prompt or link offers one.
     ("src/components/chat/topbar.ts",
@@ -1911,6 +1937,10 @@ PREMIUM_FOR_EVERYONE_EDITS = (
 
 SETTINGS = "src/components/sidebarLeft/tabs/settings.tsx"
 SETTINGS_SEARCH = "src/lib/settingsSearch/generated.ts"
+# The rows Settings hides while Premium cannot be bought (premium_purchase_blocked,
+# settings.tsx); its search has no such condition and would still list them.
+SETTINGS_SEARCH_SALE_ROWS = ("Premium.Boarding.Title", "TelegramBusiness", "MenuTelegramStars",
+                             "MenuTelegramStarsTon", "Chat.Menu.SendGift")
 
 
 def help_section(tree):
@@ -1918,7 +1948,7 @@ def help_section(tree):
     tree.replace_block(SETTINGS, "      {/* help, the way tdesktop ends its main settings */}\n", "      </Section>\n",
                        "      {/* pluma: no help section: the FAQ and the volunteers' support are Telegram's. */}\n",
                        must_contain=("openTelegramFaq", "askQuestion(", "'AskAQuestion'"))
-    for key in ("AskAQuestion", "TelegramFaq"):
+    for key in ("AskAQuestion", "TelegramFaq", *SETTINGS_SEARCH_SALE_ROWS):
         tree.replace(SETTINGS_SEARCH,
                      f"    {{id: 'AppSettingsTab:{key}', sectionId: 'AppSettingsTab', kind: 'row', titleLangKey: '{key}'}},\n",
                      "")
@@ -1929,6 +1959,9 @@ def verify_help_section(sources):
         for s in ("openTelegramFaq", "askQuestion(", "AskAQuestion", "TelegramFaq"):
             if s in sources[rel]:
                 raise PatchError(f"{rel}: {s!r} is still there; Settings has no help section")
+    for key in SETTINGS_SEARCH_SALE_ROWS:
+        if f"id: 'AppSettingsTab:{key}'" in sources[SETTINGS_SEARCH]:
+            raise PatchError(f"{SETTINGS_SEARCH}: the search still lists {key!r}, which Settings hides")
 
 
 def premium_for_everyone(tree):
