@@ -493,6 +493,15 @@ ICONS = (
 # (path in public/, SHA-256): removed, and the manifests lose it.
 SCREENSHOT = ("assets/img/screenshot.jpg", "af2c7c5422f764adbc7f2f1febc254c978dc7d05d97b5d7934c15eeef6e8c1f0")
 
+# Upstream's message about the new version, put in the service chat of every
+# signed-in account once per version: it names Telegram and Telegram Premium
+# and links to t.me. A version with no file has no message
+# (apiUpdatesManager.deliverChangelog): (path in public/, SHA-256), removed.
+CHANGELOGS = (
+    ("changelogs/en_2.3.md", "620765b8b83588fd97cb9f3911a1ccb45cdb89683a2d13fe0bb5c57ca083eaad"),
+    ("changelogs/ru_2.3.md", "2b945d67852625b00ecc77fd39dbeedaecbab344c312e16472db7a10741663a0"),
+)
+
 # The built-in English strings. The word Telegram in a value becomes the
 # app's name ("Pluma Premium", "Sign in to Pluma"); in a key, a comment or a
 # URL (t.me/TelegramTips) it stays: (file, words renamed, words left).
@@ -827,6 +836,11 @@ def rebrand(tree, c):
     for rel, sha256 in ICONS:
         tree.replace_file("public/" + rel, sha256, (BRAND / "web" / rel).read_bytes())
     tree.replace_file("public/" + SCREENSHOT[0], SCREENSHOT[1], None)
+    # The file the message about this version is read from.
+    tree.expect("src/lib/appManagers/apiUpdatesManager.ts",
+                "fetch(`changelogs/${lang}_${newVersion.split(' ')[0]}.md`)")
+    for rel, sha256 in CHANGELOGS:
+        tree.replace_file("public/" + rel, sha256, None)
     # The sign-in page's logo, a symbol of the page used as 160 units square.
     tree.replace_block("index.html", '        <path id="logo" fill-rule="evenodd" d="M80,0 ', '"/>\n',
                        "        " + mark_logo() + "\n",
@@ -1785,6 +1799,8 @@ def verify(tree, c):
             raise PatchError(f"public/{rel}: not Pluma's (brand/web)")
     if (tree.root / "public" / SCREENSHOT[0]).exists():
         raise PatchError(f"public/{SCREENSHOT[0]}: Telegram's screenshot is still there")
+    for p in sorted((tree.root / "public/changelogs").glob(f"*_{c.version}.md")):
+        raise PatchError(f"public/changelogs/{p.name}: upstream's message about this version is still there")
     for rel, _, _ in STRINGS:
         for line in sources[rel].split("\n"):
             m = _STRING_ENTRY.match(line)

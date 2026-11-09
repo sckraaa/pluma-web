@@ -88,6 +88,11 @@ def check(site, record, target):
             raise PatchError(f"{rel}: not Pluma's (brand/web)")
     if (site / patch.SCREENSHOT[0]).exists():
         raise PatchError(f"{patch.SCREENSHOT[0]}: Telegram's screenshot is in the site")
+    version = site / "version"
+    if not version.is_file():
+        raise PatchError("version: not in the site")
+    for p in sorted((site / "changelogs").glob(f"*_{version.read_text().split()[0]}.md")):
+        raise PatchError(f"changelogs/{p.name}: upstream's message about this version is in the site")
     if f"Sign in to {name}" not in code or "Sign in to Telegram" in code or "Scan with Telegram" in code:
         raise PatchError(f"the code's sign-in page does not say {name}")
     if "plm://login?token=" not in code or "tg://login" in code:

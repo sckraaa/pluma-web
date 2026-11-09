@@ -310,7 +310,7 @@ class TreeTest(unittest.TestCase):
 
 # What the patch reads, from the commit upstream.env pins.
 UPSTREAM_PATHS = ("src", "public/version", "public/site.webmanifest", "public/site_apple.webmanifest",
-                  "public/browserconfig.xml", "public/assets/img", "package.json", "index.html", "vite.config.ts")
+                  "public/browserconfig.xml", "public/assets/img", "public/changelogs", "package.json", "index.html", "vite.config.ts")
 
 THEME = "src/helpers/themeController.ts"
 STATE = "src/config/state.ts"
@@ -560,6 +560,10 @@ DAMAGE = (
     (patch.SETTINGS, "import askQuestion, {openTelegramFaq} from '@components/askQuestion';",
      "import askQuestion, {openTelegramFaq as openFaq} from '@components/askQuestion';"),
     (patch.SETTINGS, "{/* help, the way tdesktop ends its main settings */}", "{/* help */}"),
+    # The message about the new version, and where the client reads it from.
+    ("public/changelogs/en_2.3.md", "Web K", "Web  K"),
+    ("public/changelogs/ru_2.3.md", "Web K", "Web  K"),
+    ("src/lib/appManagers/apiUpdatesManager.ts", "fetch(`changelogs/${lang}_", "fetch(`news/${lang}_"),
     (patch.SETTINGS_SEARCH, "{id: 'AppSettingsTab:TelegramFaq', sectionId: 'AppSettingsTab',", "{id: 'AppSettingsTab:Faq', sectionId: 'AppSettingsTab',"),
     *((patch.SETTINGS_SEARCH, f"{{id: 'AppSettingsTab:{key}', sectionId: 'AppSettingsTab',",
        f"{{id: 'AppSettingsTab:{key}', sectionId:  'AppSettingsTab',") for key in patch.SETTINGS_SEARCH_SALE_ROWS),
@@ -829,6 +833,8 @@ class UpstreamTest(unittest.TestCase):
             self.assertNotIn(s, settings)
         self.assertIn("<span dir=\"ltr\">{getAppVersionText()}</span>", settings)
         self.assertNotIn("TelegramFaq", tree.read(patch.SETTINGS_SEARCH))
+        # No message about the version that names Telegram.
+        self.assertFalse(list((tree.root / "public/changelogs").glob(f"*_{c.version}.md")))
         # What Settings hides while Premium cannot be bought is not in its search.
         for key in patch.SETTINGS_SEARCH_SALE_ROWS:
             self.assertNotIn(f"AppSettingsTab:{key}'", tree.read(patch.SETTINGS_SEARCH))
@@ -950,6 +956,7 @@ class BundleTest(unittest.TestCase):
                    "var q=`plm://login?token=`+o;")
         self.write("index.worker-abc.js.map", json.dumps({"sourcesContent": ["// see https://web.telegram.org/a/"]}))
         self.write("assets/img/logo.png", b"\x89PNG\r\n\x1a\n\x00\x01")
+        self.write("version", "2.3 (686)\n")
         for rel, _ in patch.ICONS:
             self.write(rel, (patch.BRAND / "web" / rel).read_bytes())
 
@@ -967,7 +974,7 @@ class BundleTest(unittest.TestCase):
         return check_bundle.check(self.site, self.record, target)
 
     def test_good(self):
-        self.assertEqual(self.check(), 6 + len(patch.ICONS))
+        self.assertEqual(self.check(), 7 + len(patch.ICONS))
 
     def test_rejects(self):
         url = self.record["server_url"]
@@ -981,6 +988,7 @@ class BundleTest(unittest.TestCase):
             ("g.js", "if(location.search.indexOf(`http=1`)>0){}"),
             ("site.webmanifest", json.dumps({"name": "Telegram Web", "short_name": "Telegram Web"})),
             ("index.html", "<title>Telegram Web</title>"),
+            ("changelogs/en_2.3.md", "Lock Telegram with a passcode."),
             ("site_apple.webmanifest", "{"),
             ("assets/img/favicon.ico", b"\x00\x00\x01\x00\x01\x00"),
             (patch.SCREENSHOT[0], b"\xff\xd8\xff\xe0"),
