@@ -128,9 +128,19 @@ async function signIn(page, {signUp}) {
   });
 }
 
+// Opens the main menu and clicks one of its items. While the app is still
+// coming up a click on the menu button can leave no menu open.
+async function menuItem(page, name) {
+  const item = page.locator('.btn-menu-item', {hasText: name});
+  await expect(async() => {
+    await page.locator('.left-sidebar-burger').click();
+    await expect(item).toBeVisible({timeout: 2_000});
+  }).toPass({timeout: 30_000});
+  await item.click();
+}
+
 async function openSavedMessages(page) {
-  await page.locator('.left-sidebar-burger').click();
-  await page.locator('.btn-menu-item', {hasText: 'Saved Messages'}).click();
+  await menuItem(page, 'Saved Messages');
   await expect(page.locator('#column-center .chat-info .peer-title', {hasText: 'Saved Messages'}).first()).toBeVisible();
 }
 
@@ -149,8 +159,7 @@ function chatType(page, tab, name) {
 // of folders from help.getAppConfig: without them it refuses to create one
 // ("the limit of undefined folders").
 async function createFolder(page) {
-  await page.locator('.left-sidebar-burger').click();
-  await page.locator('.btn-menu-item', {hasText: 'Settings'}).click();
+  await menuItem(page, 'Settings');
   // A row takes the click on its ripple, which lies over the row's text.
   await page.locator('.row-clickable', {hasText: 'Chat Folders'}).click();
   const folders = sidebarTab(page, {has: page.getByRole('button', {name: 'Create Folder'})});
@@ -188,8 +197,9 @@ test('sign in, sign up and keep a message in Saved Messages', async({browser}) =
     await page.keyboard.type(MESSAGE);
     await page.keyboard.press('Enter');
     // Sent once the server has answered: the bubble leaves the pending
-    // state (is-outgoing, is-sending) for sent or read.
-    const bubble = page.locator('.bubble.is-out', {hasText: MESSAGE});
+    // state (is-outgoing, is-sending) for sent or read. The copy that flies
+    // from the field while it is sent has no data-mid.
+    const bubble = page.locator('.bubble.is-out[data-mid]', {hasText: MESSAGE});
     await expect(bubble).toHaveClass(/\bis-(sent|read)\b/);
     await expect(bubble).not.toHaveClass(/\bis-(outgoing|sending|error)\b/);
   });
