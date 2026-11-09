@@ -409,6 +409,9 @@ DAMAGE = (
     ("src/lib/richTextProcessor/wrapUrl.ts", "url.match(/^tg:(?:\\/\\/)?(.+?)", "url.match(/^tg:(?:\\/\\/)(.+?)"),
     ("src/lib/richTextProcessor/wrapUrl.ts", "export default function wrapUrl(",
      "export const RESOLVE = 'tg://resolve';\nexport default function wrapUrl("),
+    ("src/lib/richTextProcessor/wrapUrl.ts", "export default function wrapUrl(",
+     "export const RESOLVE = /tg:\\/\\/resolve/;\nexport default function wrapUrl("),
+    ("src/lib/richTextProcessor/inferRichMessageNoAutolink.ts", "|tg:\\/\\/|", "|(?:tg):\\/\\/|"),
     # The colours.
     (THEME, "    'primary-color': '#3390ec',\n", "    'primary-color': '#3390EC',\n"),
     (THEME, "import {changeColorAccent, ColorRgb, ensureTextContrast,", "import {changeColorAccent, ensureTextContrast, ColorRgb,"),

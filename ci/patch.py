@@ -532,10 +532,12 @@ PLM_LINKS = (
     ("src/helpers/string/normalizeLinkUrl.ts", "  'tg:',\n", 1),
     ("src/helpers/string/normalizeLinkUrl.ts", "url.protocol === 'tg:'", 1),
     ("src/lib/appManagers/utils/richMessage/validateRichMessage.ts", "['http:', 'https:', 'tg:', 'tonsite:']", 1),
+    # What makes the composer's text a candidate for an automatic link.
+    ("src/lib/richTextProcessor/inferRichMessageNoAutolink.ts", "|tg:\\/\\/|", 1),
     # What a plm: link nothing handles is told apart by.
     ("src/lib/internalLinkProcessor.ts", "element.href.replace(/^tg:(?:", 1),
 )
-_TG_LINK = re.compile(r"['\"`]tg:|\^tg:")
+_TG_LINK = re.compile(r"['\"`]tg:|\^tg:|\btg:\\?/\\?/")
 _COMMENT = re.compile(r"/\*.*?\*/|(?<![:\\])//[^\n]*", re.S)
 
 # The accent of the light theme (the dark one's is #9dbb9f): the Windows
