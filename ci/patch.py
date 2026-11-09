@@ -1844,6 +1844,20 @@ PREMIUM_FOR_EVERYONE_EDITS = (
     ("src/components/chat/bubbles.ts",
      "              canTranscribeVoice: true,\n              translatableParams,\n",
      "              canTranscribeVoice: false, // pluma: the server has no transcription to offer\n              translatableParams,\n"),
+    # Boosts do not exist here: nothing waits for a level of a channel, no
+    # screen, prompt or link offers one.
+    ("src/components/chat/topbar.ts",
+     "      text: 'BoostChannel',\n      onClick: onBoostClick,\n      verify: async() => this.chat.isBroadcast\n",
+     "      text: 'BoostChannel',\n      onClick: onBoostClick,\n      verify: async() => false // pluma: boosts do not exist here (ADR 0041)\n"),
+    ("src/components/chat/topbar.ts",
+     "      text: 'BoostGroup',\n      onClick: onBoostClick,\n      verify: async() => this.chat.isMegagroup\n",
+     "      text: 'BoostGroup',\n      onClick: onBoostClick,\n      verify: async() => false // pluma: boosts do not exist here (ADR 0041)\n"),
+    ("src/lib/internalLinkProcessor.ts",
+     "    showBoostPopup(peerId);\n  };\n\n  public processPremiumFeaturesLink",
+     "    // pluma: a boost link opens the channel.\n    appImManager.setInnerPeer({peerId});\n  };\n\n  public processPremiumFeaturesLink"),
+    ("src/components/sidebarRight/tabs/groupPermissions/groupPermissions.tsx",
+     "        show: () => !!solidState.store.slowModeSeconds\n",
+     "        show: () => false // pluma: boosts do not exist here (ADR 0041)\n"),
 )
 
 
