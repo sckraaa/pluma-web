@@ -337,6 +337,10 @@ APP = "src/config/app.ts"
 # pinned upstream, replacement): every one must stop the patch with an error
 # that names the file.
 DAMAGE = (
+    # Premium stickers: each gate and the import its edit is anchored on.
+    *((rel, old, old.replace("(", "( ", 1) if "(" in old else old.replace("= ", "=  ", 1))
+      for rel, old, _ in patch.PREMIUM_STICKER_GATES),
+    ("src/components/chat/input.ts", patch.EFFECT_THUMB_IMPORT, patch.EFFECT_THUMB_IMPORT.replace("import ", "import type ", 1)),
     ("src/lib/appManagers/appStickersManager.ts", "    const stickerSet = this.storage.getFromCache(cacheKey);\n    set = stickerSet.set;",
      "    const stickerSet = this.storage.getFromCache(cacheKey)!;\n    set = stickerSet.set;"),
     ("src/lib/mtproto/schema.ts", '"layer":228', '"layer":229'),
@@ -829,6 +833,36 @@ class UpstreamTest(unittest.TestCase):
                 with self.assertRaises(patch.PatchError) as e:
                     self.run_patch()
                 self.assertIn(pathlib.PurePath(rel).name, str(e.exception))
+
+    def test_premium_stickers(self):
+        tree, _ = self.run_patch()
+        self.assertIn("export default function premiumStickersAvailable() {\n  return true;\n}\n", tree.read(patch.PREMIUM_STICKERS))
+        for rel, _, new in patch.PREMIUM_STICKER_GATES:
+            with self.subTest(rel=rel):
+                self.assertIn(new, tree.read(rel))
+                self.assertEqual(tree.read(rel).count(patch.PREMIUM_STICKERS_IMPORT), 1)
+        # Only the gates and the file of the function know it.
+        users = [rel for rel in tree.sources() if "premiumStickersAvailable" in tree.read(rel)]
+        self.assertEqual(sorted(users), sorted([patch.PREMIUM_STICKERS, *[rel for rel, _, _ in patch.PREMIUM_STICKER_GATES]]))
+        # The Premium effects of the send menu stay Premium's.
+        self.assertIn("if(!rootScope.premium && !reactionsMenu.freeCustomEmoji.has(stickerDocId)) {",
+                      tree.read("src/components/chat/sendContextMenu.ts"))
+
+    def test_premium_stickers_verify(self):
+        tree, c = self.run_patch()
+        for rel, old, new in patch.PREMIUM_STICKER_GATES:
+            with self.subTest(rel=rel):
+                text = tree.read(rel)
+                self.written.add(rel)
+                (self.root / rel).write_text(text.replace(new, old), encoding="utf-8")
+                with self.assertRaisesRegex(patch.PatchError, rel):
+                    patch.verify(tree, c)
+                (self.root / rel).write_text(text, encoding="utf-8")
+        text = tree.read(patch.PREMIUM_STICKERS)
+        (self.root / patch.PREMIUM_STICKERS).write_text(text.replace("return true", "return false"), encoding="utf-8")
+        with self.assertRaisesRegex(patch.PatchError, patch.PREMIUM_STICKERS):
+            patch.verify(tree, c)
+        (self.root / patch.PREMIUM_STICKERS).write_text(text, encoding="utf-8")
 
     def test_saved_tags_file_of_upstream(self):
         self.written.add(SAVED_TAGS)
