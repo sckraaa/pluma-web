@@ -1534,9 +1534,8 @@ _TELEGRAM_LINK_HOST = re.compile(r"(?<![\w.-])(?:t|telegram)\.(?:me|dog)(?![\w-]
 SITE_KEEP = {
     # Terms, privacy and ad policies of Stars, gifts, mini apps and bots,
     # and the unsupported-message hints, in the built-in English strings.
-    "src/lang.ts": 25,
+    "src/lang.ts": 23,
     "src/components/popups/starGiftInfo.tsx": 1,
-    "src/components/sidebarLeft/tabs/chatAutomation.tsx": 1,
     "src/helpers/getBotPrivacyPolicy.ts": 1,
     # The switch to Web A and the choice made for it: on Telegram's own
     # domains only, and MAIN_DOMAINS is empty here.
@@ -1556,6 +1555,32 @@ SITE_KEEP = {
     "src/components/popupSandbox/stories/walletTonConnect.ts": 1,
 }
 _TELEGRAM_SITE = re.compile(r"(?<![\w-])(?:[\w-]+\.)*telegram\.org(?![\w-])")
+
+# Links to Telegram's site that an ordinary screen shows: Telegram's apps on
+# the chat list of an account with no contacts, and "Learn More" of the chat
+# automation tab, which the Settings search opens. Applied before rebrand
+# renames the word in the strings: (file, text, replacement).
+TELEGRAM_SITE_EDITS = (
+    ("src/lang.ts",
+     "'ChatList.Main.EmptyPlaceholder.SubtitleNoContacts': 'Use Telegram app on your "
+     "[Android](https://telegram.org/android) or [iOS](https://telegram.org/dl/ios) device to sync your contacts',\n",
+     "'ChatList.Main.EmptyPlaceholder.SubtitleNoContacts': 'Use Telegram app on your "
+     "Android or iOS device to sync your contacts',\n"),
+    ("src/lang.ts",
+     "'ChatAutomation.HeroDescription': 'Add a bot to your account to help you automatically process and respond "
+     "to the messages you receive. [Learn More >]()',\n",
+     "'ChatAutomation.HeroDescription': 'Add a bot to your account to help you automatically process and respond "
+     "to the messages you receive.',\n"),
+    ("src/components/sidebarLeft/tabs/chatAutomation.tsx",
+     "  const learnMoreAnchor = document.createElement('a');\n"
+     "  learnMoreAnchor.href = 'https://telegram.org';\n"
+     "  learnMoreAnchor.target = '_blank';\n"
+     "  learnMoreAnchor.rel = 'noopener noreferrer';\n\n",
+     ""),
+    ("src/components/sidebarLeft/tabs/chatAutomation.tsx",
+     "{i18n('ChatAutomation.HeroDescription', [learnMoreAnchor])}",
+     "{i18n('ChatAutomation.HeroDescription')}"),
+)
 
 
 def link_host(tree):
@@ -1751,6 +1776,10 @@ def patch(tree, c):
     # Premium stickers for every user.
     premium_stickers(tree)
     premium_for_everyone(tree)
+
+    # Telegram's site off the screens a user reaches.
+    for rel, old, new in TELEGRAM_SITE_EDITS:
+        tree.replace(rel, old, new)
 
     # Pluma's name, icons, link scheme and colours.
     rebrand(tree, c)

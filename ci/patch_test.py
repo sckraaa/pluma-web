@@ -563,6 +563,10 @@ DAMAGE = (
     (patch.SETTINGS, "import askQuestion, {openTelegramFaq} from '@components/askQuestion';",
      "import askQuestion, {openTelegramFaq as openFaq} from '@components/askQuestion';"),
     (patch.SETTINGS, "{/* help, the way tdesktop ends its main settings */}", "{/* help */}"),
+    # Telegram's site on the screens a user reaches.
+    ("src/lang.ts", "[Android](https://telegram.org/android)", "[Android](https://telegram.org/apk)"),
+    ("src/components/sidebarLeft/tabs/chatAutomation.tsx", "learnMoreAnchor.href = 'https://telegram.org';",
+     "learnMoreAnchor.href = 'https://telegram.org/faq';"),
     # The message about the new version, and where the client reads it from.
     ("public/changelogs/en_2.3.md", "Web K", "Web  K"),
     ("public/changelogs/ru_2.3.md", "Web K", "Web  K"),
@@ -914,6 +918,16 @@ class UpstreamTest(unittest.TestCase):
                       "      telegramWebView.dispatchWebViewEvent('emoji_status_failed', {error: 'SERVER_ERROR'});\n", web_app)
         self.assertNotIn("bot_can_manage_emoji_status) {", web_app)
         self.assertNotIn("feature: 'emoji_status'", tree.read("src/lib/internalLinkProcessor.ts"))
+
+    def test_no_telegram_site_on_screens(self):
+        tree, _ = self.run_patch()
+        lang = tree.read("src/lang.ts")
+        self.assertIn("'ChatList.Main.EmptyPlaceholder.SubtitleNoContacts': "
+                      "'Use Pluma app on your Android or iOS device to sync your contacts',", lang)
+        self.assertIn("respond to the messages you receive.',\n", lang)
+        automation = tree.read("src/components/sidebarLeft/tabs/chatAutomation.tsx")
+        self.assertNotIn("telegram.org", automation)
+        self.assertNotIn("learnMoreAnchor", automation)
 
     def test_premium_stickers(self):
         tree, _ = self.run_patch()
