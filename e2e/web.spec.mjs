@@ -188,8 +188,9 @@ test('sign in, sign up and keep a message in Saved Messages', async({browser}) =
     await page.keyboard.type(MESSAGE);
     await page.keyboard.press('Enter');
     // Sent once the server has answered: the bubble leaves the pending
-    // state (is-outgoing, is-sending) for sent or read.
-    const bubble = page.locator('.bubble.is-out', {hasText: MESSAGE});
+    // state (is-outgoing, is-sending) for sent or read. The copy that flies
+    // from the field while it is sent has no data-mid.
+    const bubble = page.locator('.bubble.is-out[data-mid]', {hasText: MESSAGE});
     await expect(bubble).toHaveClass(/\bis-(sent|read)\b/);
     await expect(bubble).not.toHaveClass(/\bis-(outgoing|sending|error)\b/);
   });
