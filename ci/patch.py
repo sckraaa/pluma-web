@@ -1957,8 +1957,12 @@ PREMIUM_FOR_EVERYONE_EDITS = (
 
 SETTINGS = "src/components/sidebarLeft/tabs/settings.tsx"
 SETTINGS_SEARCH = "src/lib/settingsSearch/generated.ts"
+SETTINGS_SEARCH_OPENERS = "src/lib/settingsSearch/openers.ts"
+SETTINGS_SEARCH_REGISTRY = "src/lib/settingsSearch/registry.ts"
 # The rows Settings hides while Premium cannot be bought (premium_purchase_blocked,
-# settings.tsx); its search has no such condition and would still list them.
+# settings.tsx); its search has no such condition and would still list them. The
+# index is generated from the tabs when a build starts (settings-search-plugin),
+# so the rows are dropped where the index is read, as upstream drops the wallet's.
 SETTINGS_SEARCH_SALE_ROWS = ("Premium.Boarding.Title", "TelegramBusiness", "MenuTelegramStars",
                              "MenuTelegramStarsTon", "Chat.Menu.SendGift")
 
@@ -1968,10 +1972,21 @@ def help_section(tree):
     tree.replace_block(SETTINGS, "      {/* help, the way tdesktop ends its main settings */}\n", "      </Section>\n",
                        "      {/* pluma: no help section: the FAQ and the volunteers' support are Telegram's. */}\n",
                        must_contain=("openTelegramFaq", "askQuestion(", "'AskAQuestion'"))
-    for key in ("AskAQuestion", "TelegramFaq", *SETTINGS_SEARCH_SALE_ROWS):
+    for key in ("AskAQuestion", "TelegramFaq"):
         tree.replace(SETTINGS_SEARCH,
                      f"    {{id: 'AppSettingsTab:{key}', sectionId: 'AppSettingsTab', kind: 'row', titleLangKey: '{key}'}},\n",
                      "")
+    sale_rows = "".join(f"  'AppSettingsTab:{key}',\n" for key in SETTINGS_SEARCH_SALE_ROWS)
+    wallet_entries = "export const WALLET_ENTRIES = new Set([\n  'AppSettingsTab:WalletAttachMoney'\n]);\n"
+    tree.replace(SETTINGS_SEARCH_OPENERS, wallet_entries,
+                 wallet_entries + "\n"
+                 "// pluma: rows Settings hides while Premium cannot be bought; the index lists them.\n"
+                 f"export const SALE_ENTRIES = new Set([\n{sale_rows}]);\n")
+    tree.replace(SETTINGS_SEARCH_REGISTRY, "NON_NAVIGABLE_SECTIONS, WALLET_ENTRIES} from './openers';",
+                 "NON_NAVIGABLE_SECTIONS, SALE_ENTRIES, WALLET_ENTRIES} from './openers';")
+    tree.replace(SETTINGS_SEARCH_REGISTRY, "    (isWalletReleased() || !WALLET_ENTRIES.has(entry.id)));\n",
+                 "    (isWalletReleased() || !WALLET_ENTRIES.has(entry.id)) &&\n"
+                 "    !SALE_ENTRIES.has(entry.id)); // pluma\n")
 
 
 def verify_help_section(sources):
@@ -1980,8 +1995,10 @@ def verify_help_section(sources):
             if s in sources[rel]:
                 raise PatchError(f"{rel}: {s!r} is still there; Settings has no help section")
     for key in SETTINGS_SEARCH_SALE_ROWS:
-        if f"id: 'AppSettingsTab:{key}'" in sources[SETTINGS_SEARCH]:
-            raise PatchError(f"{SETTINGS_SEARCH}: the search still lists {key!r}, which Settings hides")
+        if f"  'AppSettingsTab:{key}',\n" not in sources[SETTINGS_SEARCH_OPENERS]:
+            raise PatchError(f"{SETTINGS_SEARCH_OPENERS}: the search still lists {key!r}, which Settings hides")
+    if "!SALE_ENTRIES.has(entry.id)" not in sources[SETTINGS_SEARCH_REGISTRY]:
+        raise PatchError(f"{SETTINGS_SEARCH_REGISTRY}: the search does not drop the rows of the sale")
 
 
 def premium_for_everyone(tree):

@@ -568,8 +568,10 @@ DAMAGE = (
     ("public/changelogs/ru_2.3.md", "Web K", "Web  K"),
     ("src/lib/appManagers/apiUpdatesManager.ts", "fetch(`changelogs/${lang}_", "fetch(`news/${lang}_"),
     (patch.SETTINGS_SEARCH, "{id: 'AppSettingsTab:TelegramFaq', sectionId: 'AppSettingsTab',", "{id: 'AppSettingsTab:Faq', sectionId: 'AppSettingsTab',"),
-    *((patch.SETTINGS_SEARCH, f"{{id: 'AppSettingsTab:{key}', sectionId: 'AppSettingsTab',",
-       f"{{id: 'AppSettingsTab:{key}', sectionId:  'AppSettingsTab',") for key in patch.SETTINGS_SEARCH_SALE_ROWS),
+    (patch.SETTINGS_SEARCH_OPENERS, "export const WALLET_ENTRIES = new Set([", "export const WALLET_ENTRIES =  new Set(["),
+    (patch.SETTINGS_SEARCH_REGISTRY, "NON_NAVIGABLE_SECTIONS, WALLET_ENTRIES} from './openers';",
+     "WALLET_ENTRIES, NON_NAVIGABLE_SECTIONS} from './openers';"),
+    (patch.SETTINGS_SEARCH_REGISTRY, "(isWalletReleased() || !WALLET_ENTRIES.has(entry.id)));\n", "(isWalletReleased() || !WALLET_ENTRIES.has(entry.id)) );\n"),
     ("src/components/chat/bubbleParts/adminLogsResolver/index.tsx", "lines.push(`https://t.me/${action.new_value}`);",
      "lines.push('https://t.me/' + action.new_value);"),
     (PROFILE, "exportedInvite.link.indexOf('t.me/')", "exportedInvite.link.indexOf('/t.me/')"),
@@ -840,7 +842,8 @@ class UpstreamTest(unittest.TestCase):
         self.assertFalse(list((tree.root / "public/changelogs").glob(f"*_{c.version}.md")))
         # What Settings hides while Premium cannot be bought is not in its search.
         for key in patch.SETTINGS_SEARCH_SALE_ROWS:
-            self.assertNotIn(f"AppSettingsTab:{key}'", tree.read(patch.SETTINGS_SEARCH))
+            self.assertIn(f"  'AppSettingsTab:{key}',\n", tree.read(patch.SETTINGS_SEARCH_OPENERS))
+        self.assertIn("!SALE_ENTRIES.has(entry.id)", tree.read(patch.SETTINGS_SEARCH_REGISTRY))
         # Round videos have no button of their text, and gifts no entry.
         self.assertIn("    if(false) { // pluma: the server has no transcription to offer\n      wrapRoundVideoBubble({\n",
                       tree.read(BUBBLES))
