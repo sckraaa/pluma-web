@@ -567,6 +567,9 @@ DAMAGE = (
     ("src/lang.ts", "[Android](https://telegram.org/android)", "[Android](https://telegram.org/apk)"),
     ("src/components/sidebarLeft/tabs/chatAutomation.tsx", "learnMoreAnchor.href = 'https://telegram.org';",
      "learnMoreAnchor.href = 'https://telegram.org/faq';"),
+    # What ci/check_bundle.py looks for in the built code.
+    ("src/config/modes.ts", "const httpOnly = Modes.http = isFlagOn('http');", "const httpOnly = (Modes.http = isFlagOn('http'));"),
+    ("src/config/modes.ts", " && !isFlagOn('noMultipleTransports'),", " && isFlagOn('noMultipleTransports') === false,"),
     # The message about the new version, and where the client reads it from.
     ("public/changelogs/en_2.3.md", "Web K", "Web  K"),
     ("public/changelogs/ru_2.3.md", "Web K", "Web  K"),
@@ -988,6 +991,9 @@ class BundleTest(unittest.TestCase):
                    f"function Re(e){{return Le(e),`{url}`}}var k=[{{modulus:`{modulus}`,exponent:`010001`}}];"
                    f"var s={{API:{{}},layer:233}};var a={{id:10004,hash:`{api_hash}`}};"
                    "var m={multipleTransports:!1};var t=`https://t.me/`+n;"
+                   # What stays with the transport off: the flags' names and the settings tab.
+                   "var f=[`http`,`noMultipleTransports`];var w=b(`http`)?`http`:b(`noMultipleTransports`)?`websocket`:`auto`;"
+                   "var h=u.startsWith(`http`);"
                    "var l={\"Login.Title\":`Sign in to Pluma`};"
                    "var q=`plm://login?token=`+o;")
         self.write("index.worker-abc.js.map", json.dumps({"sourcesContent": ["// see https://web.telegram.org/a/"]}))
@@ -1020,8 +1026,10 @@ class BundleTest(unittest.TestCase):
             ("c.js", f"var k=`{TWEB_PROD_MODULUS}`;"),
             ("d.wasm", b"\x00asm\x01\x00\x00\x00 2001:b28:f23f:f005::a "),
             ("e.js", f"var u=`{url}`,v=`wss://other.example/apiws`;"),
-            ("f.js", "var m={multipleTransports:location.search.indexOf(`noMultipleTransports=1`)===-1};"),
-            ("g.js", "if(location.search.indexOf(`http=1`)>0){}"),
+            ("f.js", "var m={multipleTransports:!z(`noMultipleTransports`)};"),
+            ("f2.js", 'var m={multipleTransports:!(z("noMultipleTransports")||q.has("noMultipleTransports"))};'),
+            ("g.js", "(m.http=z(`http`))&&(m.multipleTransports=!1);"),
+            ("g2.js", "const a=m.http=z('http');"),
             ("site.webmanifest", json.dumps({"name": "Telegram Web", "short_name": "Telegram Web"})),
             ("index.html", "<title>Telegram Web</title>"),
             ("changelogs/en_2.3.md", "Lock Telegram with a passcode."),

@@ -1685,6 +1685,10 @@ def patch(tree, c):
                        "    return undefined;\n"
                        "  };\n",
                        must_contain=("this.sslSubdomains", "this.dcOptions", ".web.telegram.org/", "new HTTP("))
+    # The two reads of the flags that ci/check_bundle.py looks for in the code:
+    # what the flags compile out. Another form here makes that check blind.
+    tree.expect("src/config/modes.ts", "  const httpOnly = Modes.http = isFlagOn('http');\n")
+    tree.expect("src/config/modes.ts", " && !isFlagOn('noMultipleTransports'),\n")
     if (tree.root / ".env.production.local").exists():
         raise PatchError(".env.production.local: upstream ships one now; review what it sets")
     tree.write(".env.production.local",

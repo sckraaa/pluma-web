@@ -24,10 +24,15 @@ from patch import PatchError  # noqa: E402
 
 MANIFESTS = ("site.webmanifest", "site_apple.webmanifest")
 
-# Query switches that tweb compiles in only with its HTTP transport on
-# (src/config/modes.ts): ?http=1, and ?noMultipleTransports=1 of the mode
-# that starts on HTTP.
-HTTP_TRANSPORT_SWITCHES = ("noMultipleTransports=1", "'http=1'", "`http=1`", '"http=1"')
+# The reads of the flags that tweb compiles in only with its HTTP transport on
+# (src/config/modes.ts): Modes.http = isFlagOn('http'), and the negated
+# noMultipleTransports of the mode that starts on HTTP. The names of the flags
+# alone stay in any build: KEPT_FLAGS lists them, and the tab of experimental
+# settings reads them without a negation and without Modes.
+HTTP_TRANSPORT_SWITCHES = (
+    re.compile(r"""\.http=[\w$]+\((["'`])http\1\)"""),
+    re.compile(r"""!\(?[\w$]+\((["'`])noMultipleTransports\1\)"""),
+)
 
 
 def check(site, record, target):
@@ -59,9 +64,10 @@ def check(site, record, target):
     urls = set(re.findall(r"wss?://[^\s'\"`\\]*", code))
     if urls != {record["server_url"]}:
         raise PatchError(f"the code's WebSocket URLs are {sorted(urls)}, expected {record['server_url']}")
-    for s in HTTP_TRANSPORT_SWITCHES:
-        if s in code:
-            raise PatchError(f"the code has tweb's HTTP transport on ({s}); see .env.production.local of ci/patch.py")
+    for switch in HTTP_TRANSPORT_SWITCHES:
+        m = switch.search(code)
+        if m:
+            raise PatchError(f"the code has tweb's HTTP transport on ({m.group(0)}); see .env.production.local of ci/patch.py")
     for what, s in (("server key", record["modulus"]), ("api_hash", record["api_hash"])):
         if s not in code:
             raise PatchError(f"the code has no {what} {s[:16]}...")
