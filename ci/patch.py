@@ -700,6 +700,8 @@ ON_PRIMARY = (
      "  background: var(--primary-button-color);\n" "  color: #fff;\n"),
     ("src/components/wallet/tonConnect/tonConnect.module.scss",
      "  background-color: var(--primary-color);\n" "  color: #fff;\n"),
+    ("src/components/chat/inputEditor/style.scss",
+     "    background-color: var(--primary-color);\n" "    border: 0;\n" "    border-radius: .3125rem;\n" "    color: #fff;\n"),
     ("src/components/popups/webAppLocationAccess.module.scss",
      "  background: var(--primary-color);\n" "  color: var(--white);\n"),
 )
