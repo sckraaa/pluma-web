@@ -6,10 +6,9 @@ The repository holds no copy of the app's code. CI fetches the upstream commit p
 
 ## Upstream
 
-tweb has no releases, so Pluma pins a commit: [`346844bf`](https://github.com/morethanwords/tweb/commit/346844bf8c002bc1af4de20e78ae1d0df0265019) of 2026-09-22 (version 2.2 (676)), the last one whose MTProto schema (`src/lib/mtproto/schema.ts`) is layer 228, the layer the server speaks.
+tweb has no releases, so Pluma pins a commit: [`aa74832e`](https://github.com/morethanwords/tweb/commit/aa74832ed1976008d1ad1859d0b0cd671e75a7bd) of 2026-11-08 (version 2.3 (686)), whose MTProto schema (`src/lib/mtproto/schema.ts`) is layer 233, a layer the server speaks.
 
-- Layer 228 came with [`2117883f`](https://github.com/morethanwords/tweb/commit/2117883fd23f2985818cd1ceef41c13efd255225) "Implement ephemeral messages" of 2026-07-28.
-- The next commit, [`8197da75`](https://github.com/morethanwords/tweb/commit/8197da75848ea31e79dea31f5d63b57854fcd6d8) "Layer 229" of the same day, moves to layer 229. The 17 `keyboardButton…` constructors give way to one `keyboardButton` with a button type and a new `keyboardInlineButton`; `replyInlineMarkup`, `keyboardButton` and eight more constructors change their ids; 31 constructors and 6 methods are new. A client of that layer sends and expects constructors a layer-228 server does not know.
+The server serves layer 233 alongside 228: clients of either layer work against it at the same time, so the commit does not have to be the last of an old layer.
 
 ## What the patch changes
 
@@ -22,9 +21,9 @@ tweb has no releases, so Pluma pins a commit: [`346844bf`](https://github.com/mo
 - **Tags of Saved Messages.** Every user can tag messages of Saved Messages, filter by a tag and name it, as a Premium user of Telegram can: Pluma sells no Premium. The places that sent a user without Premium to the Premium popup there ask `savedTagsAvailable()` instead, which is true; no other Premium feature opens. How many tags a message takes is the limit of reactions, which the server's `reactions_user_max_default` sets.
 - **pluma.chat links.** `pluma.chat` is the app's link host, as `t.me` is Telegram's: a `pluma.chat/<username>`, `pluma.chat/+<invite>` or `pluma.chat/addstickers/<name>` link opens inside the app, as the same `t.me` link does. Only the host itself counts, not its subdomains (`web.pluma.chat` is a site, not a username, unlike `durov.t.me`). The pages of the site `pluma.chat` itself (its root, `pluma.chat/iphone`, `/android`, `/web`, `/dl/…`, `/assets/…` and the rest of `LINK_SITE_PATHS` in `ci/patch.py`) open in the browser, as any site's do. The links the client makes for the user to copy, share, see or scan are `https://pluma.chat/…`: profile and username links, message and story links, sticker and emoji sets, the QR code of a profile, a chat's public link and its field. `t.me` and `telegram.me` links stay internal, as upstream has them; links to Telegram's own (gift codes, NFT gifts, BotFather) stay `t.me`.
 - **Telegram's own services.** None are contacted (next section).
-- **Adding a set from its link.** In the pinned upstream, *Add* in a set opened by `t.me/addstickers/<name>` or `t.me/addemoji/<name>` does nothing: the set is cached under its short name and looked up under its id. The patch loads it by its id first, as Telegram's current Web K reads the set it is given.
+- **Help section.** Settings has no FAQ and no Ask a Question: they are Telegram's site and Telegram's volunteers.
 
-After the edits, the sources are checked again. After the build, [`ci/check_bundle.py`](ci/check_bundle.py) reads every file of the site, source maps included: the server URL, the server key, the `api_hash`, layer 228, Pluma's icons, "Sign in to Pluma" and the `plm://login` link of the QR code must be there; no Telegram datacenter address, MTProto endpoint, server key or credential may be; the code may open no WebSocket but the server's.
+After the edits, the sources are checked again. After the build, [`ci/check_bundle.py`](ci/check_bundle.py) reads every file of the site, source maps included: the server URL, the server key, the `api_hash`, the layer, Pluma's icons, "Sign in to Pluma" and the `plm://login` link of the QR code must be there; no Telegram datacenter address, MTProto endpoint, server key or credential may be; the code may open no WebSocket but the server's.
 
 ## What the client sends outside the server
 
@@ -50,7 +49,7 @@ Left as they are, since they need the user to act:
 
 The client looks like Pluma, not like Telegram:
 
-- **Name.** Every "Telegram" in the built-in English strings becomes the app's name (`PLUMA_APP_NAME`): "Sign in to Pluma", "Pluma Premium", "Pluma Stars". Keys and code identifiers, the mini-app API (`window.Telegram`), storage names and the URLs of Telegram's sites stay. The patch counts the words it renames and the ones it leaves, so a new string upstream stops the build until someone has looked at it. The menu's footer reads "Pluma Web 2.2 (676)" and links to this repository; the menu loses *Telegram Features* (t.me/TelegramTips) and *Report a Bug* (bugs.telegram.org).
+- **Name.** Every "Telegram" in the built-in English strings becomes the app's name (`PLUMA_APP_NAME`): "Sign in to Pluma", "Pluma Premium", "Pluma Stars". Keys and code identifiers, the mini-app API (`window.Telegram`), storage names and the URLs of Telegram's sites stay. The patch counts the words it renames and the ones it leaves, so a new string upstream stops the build until someone has looked at it. The menu's footer reads "Pluma Web 2.3 (686)" and links to this repository; the menu loses *Telegram Features* (t.me/TelegramTips) and *Report a Bug* (bugs.telegram.org).
 - **Icons and logos.** Favicons, app icons, the Safari and Windows tiles, the notification icon and badge and the logo in the middle of the QR code are Pluma's, and Telegram's screenshot leaves the manifests. The sign-in page draws the mark in the theme's text colour.
 - **Links.** Pluma's apps use `plm://` where Telegram's use `tg://`, which stays with Telegram's apps installed beside them. The QR code signs in with `plm://login?token=…`; the links the client makes (bot commands, hashtags, settings, instant view, voice chats) are `plm://`, and it opens `plm://` links, not `tg://` ones. A web page cannot register `plm://` with the system (browsers take `web+` schemes only), so that is the desktop and mobile apps' part.
 - **Colours.** The default light and dark themes are "graphite and sage": accent `#5B7A5E` and `#9DBB9F`, outgoing bubbles `#E3EAE2` and `#2C3A2D` (Web K draws no gradient), sage wallpapers, and dark text on the light accent of the dark theme. Themes a browser saved with an earlier build switch from Telegram's defaults to these. The *Day* and *Dark Blue* themes and the accent presets a user picks stay as upstream has them, apart from people's colours (below).
@@ -84,9 +83,9 @@ Neither is a secret: every copy of the page carries them. The build prints the k
 The artifact of a run, `pluma-web-<version>-<target>`, holds `pluma-web-<version>-<target>.tar.gz` (the site) and its SHA-256, and is kept for 30 days:
 
 ```sh
-gh run download <run id> -n pluma-web-2.2-676-server
-shasum -a 256 -c pluma-web-2.2-676-server.tar.gz.sha256
-tar -xzf pluma-web-2.2-676-server.tar.gz
+gh run download <run id> -n pluma-web-2.3-686-server
+shasum -a 256 -c pluma-web-2.3-686-server.tar.gz.sha256
+tar -xzf pluma-web-2.3-686-server.tar.gz
 ```
 
 Unlike an APK, the site is not encrypted: it is static content that the server's web site serves to anyone who opens it, so the artifact discloses nothing the site does not.
@@ -130,7 +129,7 @@ PLUMA_SERVER_DIR=~/pluma e2e/run.sh
 
 It starts the server's e2e stand with its own throwaway key, builds the client for that stand and serves it on `localhost`. A phone on the allowlist signs in with the code from `pluma-admin`, signs up, sends a message to Saved Messages and creates a chat folder; a second browser signs in to the same account and must find the message and the folder, which only the server can have given it. Web K takes the folder limits from the server's `help.getAppConfig`: without them it creates no folder. The browser resolves no host name but `localhost`, and any request elsewhere fails the run. Screenshots of every step go to `.e2e/screenshots`; the stand and the browser's files are removed at the end.
 
-To try the development build by hand, start the stand with the development key and the gateway's WebSocket port on 11443 (`docs/ops/clients.md` of the server repository), serve `out/pluma-web-<version>-dev/` on `localhost` (e.g. `python3 -m http.server --bind 127.0.0.1 --directory out/pluma-web-2.2-676-dev 8080`) and open it.
+To try the development build by hand, start the stand with the development key and the gateway's WebSocket port on 11443 (`docs/ops/clients.md` of the server repository), serve `out/pluma-web-<version>-dev/` on `localhost` (e.g. `python3 -m http.server --bind 127.0.0.1 --directory out/pluma-web-2.3-686-dev 8080`) and open it.
 
 ## Updating the upstream
 
