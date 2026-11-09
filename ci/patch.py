@@ -1678,6 +1678,7 @@ def patch(tree, c):
 
     # Premium stickers for every user.
     premium_stickers(tree)
+    premium_for_everyone(tree)
 
     # Pluma's name, icons, link scheme and colours.
     rebrand(tree, c)
@@ -1803,6 +1804,7 @@ def verify(tree, c):
         raise PatchError(f"{TOPBAR_SEARCH}: the tags of the search still ask Premium")
 
     verify_premium_stickers(tree, sources)
+    verify_premium_for_everyone(tree)
 
     # Links: pluma.chat is a link host of the app, its exact host only, and
     # no Telegram link host is left but the ones LINK_KEEP knows.
@@ -1822,6 +1824,53 @@ def verify(tree, c):
     if "exportedInvite.link.indexOf(" in sources[PROFILE]:
         raise PatchError(f"{PROFILE}: the invite link row cuts the link at t.me/")
 
+
+
+# --- Premium for everyone -----------------------------------------------------
+# Task 071 (ADR 0041): every user has Premium and every boost-gated feature is
+# open, so the server sends the Premium flag for everybody. Only what the flag
+# would make wrong is edited: the star by every name, the purchase rows that
+# show for anyone with Premium, and what the server does not serve.
+PREMIUM_FOR_EVERYONE_EDITS = (
+    ("src/components/generateTitleIcons.ts",
+     "    } else if((peer as User.user).pFlags.premium && !isPremiumFeaturesHidden) {\n",
+     "    } else if(false) { // pluma: no star: everybody has Premium\n"),
+    ("src/components/sidebarLeft/index.ts",
+     "      if(isPremium) sidebarHeader.append(statusBtnIcon);\n      else statusBtnIcon.remove();\n",
+     "      // pluma: the server does not serve account.updateEmojiStatus.\n      statusBtnIcon.remove();\n"),
+    ("src/components/chat/bubbles.ts",
+     "                canTranscribeVoice: true\n              });\n              preview.append(docDiv);\n",
+     "                canTranscribeVoice: false // pluma: the server has no transcription to offer\n              });\n              preview.append(docDiv);\n"),
+    ("src/components/chat/bubbles.ts",
+     "              canTranscribeVoice: true,\n              translatableParams,\n",
+     "              canTranscribeVoice: false, // pluma: the server has no transcription to offer\n              translatableParams,\n"),
+    # Boosts do not exist here: nothing waits for a level of a channel, no
+    # screen, prompt or link offers one.
+    ("src/components/chat/topbar.ts",
+     "      text: 'BoostChannel',\n      onClick: onBoostClick,\n      verify: async() => this.chat.isBroadcast\n",
+     "      text: 'BoostChannel',\n      onClick: onBoostClick,\n      verify: async() => false // pluma: boosts do not exist here (ADR 0041)\n"),
+    ("src/components/chat/topbar.ts",
+     "      text: 'BoostGroup',\n      onClick: onBoostClick,\n      verify: async() => this.chat.isMegagroup\n",
+     "      text: 'BoostGroup',\n      onClick: onBoostClick,\n      verify: async() => false // pluma: boosts do not exist here (ADR 0041)\n"),
+    ("src/lib/internalLinkProcessor.ts",
+     "    showBoostPopup(peerId);\n  };\n\n  public processPremiumFeaturesLink",
+     "    // pluma: a boost link opens the channel.\n    appImManager.setInnerPeer({peerId});\n  };\n\n  public processPremiumFeaturesLink"),
+    ("src/components/sidebarRight/tabs/groupPermissions/groupPermissions.tsx",
+     "        show: () => !!solidState.store.slowModeSeconds\n",
+     "        show: () => false // pluma: boosts do not exist here (ADR 0041)\n"),
+)
+
+
+def premium_for_everyone(tree):
+    for rel, old, new in PREMIUM_FOR_EVERYONE_EDITS:
+        tree.replace(rel, old, new)
+
+
+def verify_premium_for_everyone(tree):
+    for rel, old, new in PREMIUM_FOR_EVERYONE_EDITS:
+        text = tree.read(rel)
+        if text.count(new) != 1 or old in text.replace(new, ""):
+            raise PatchError(f"{rel}: the edit of task 071 is not there")
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
