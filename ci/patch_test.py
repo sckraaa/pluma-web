@@ -556,6 +556,11 @@ DAMAGE = (
     ("src/lib/appManagers/utils/richMessage/validateRichMessage.ts", "'tg:', 'tonsite:'", "'tonsite:', 'tg:'"),
     ("src/lib/internalLinkProcessor.ts", "element.href.replace(/^tg:(?:", "element.href.replace(/^(?:tg):(?:"),
     ("src/helpers/copyContact.ts", "export function copyPeerId(", "const FAQ = 'https://telegram.org/faq';\nexport function copyPeerId("),
+    # The help section of Settings.
+    (patch.SETTINGS, "import askQuestion, {openTelegramFaq} from '@components/askQuestion';",
+     "import askQuestion, {openTelegramFaq as openFaq} from '@components/askQuestion';"),
+    (patch.SETTINGS, "{/* help, the way tdesktop ends its main settings */}", "{/* help */}"),
+    (patch.SETTINGS_SEARCH, "{id: 'AppSettingsTab:TelegramFaq', sectionId: 'AppSettingsTab',", "{id: 'AppSettingsTab:Faq', sectionId: 'AppSettingsTab',"),
     ("src/components/chat/bubbleParts/adminLogsResolver/index.tsx", "lines.push(`https://t.me/${action.new_value}`);",
      "lines.push('https://t.me/' + action.new_value);"),
     (PROFILE, "exportedInvite.link.indexOf('t.me/')", "exportedInvite.link.indexOf('/t.me/')"),
@@ -815,6 +820,13 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn("['http:', 'https:', 'plm:', 'tonsite:']",
                       tree.read("src/lib/appManagers/utils/richMessage/validateRichMessage.ts"))
         self.assertIn("element.href.replace(/^plm:(?:", tree.read("src/lib/internalLinkProcessor.ts"))
+        # No help section in Settings or its search; the About text and the
+        # version under it stay.
+        settings = tree.read(patch.SETTINGS)
+        for s in ("openTelegramFaq", "askQuestion", "AskAQuestion"):
+            self.assertNotIn(s, settings)
+        self.assertIn("<span dir=\"ltr\">{getAppVersionText()}</span>", settings)
+        self.assertNotIn("TelegramFaq", tree.read(patch.SETTINGS_SEARCH))
         self.assertIn("  return `https://pluma.chat/${username}`;\n", tree.read("src/helpers/qrCode/paintQrCode.ts"))
         self.assertEqual(tree.read("src/components/chat/bubbleParts/adminLogsResolver/index.tsx")
                          .count("pluma.chat/${action."), 4)

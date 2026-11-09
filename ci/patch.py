@@ -1511,8 +1511,8 @@ _TELEGRAM_LINK_HOST = re.compile(r"(?<![\w.-])(?:t|telegram)\.(?:me|dog)(?![\w-]
 
 # The telegram.org hosts left in the code (comments aside), by file. A new
 # one upstream stops the patch until someone decides whether the user can
-# reach it: the links that lead to Telegram's services are taken away; these
-# stay.
+# reach it: the links that lead to Telegram's services are taken away (the
+# FAQ of help_section); these stay.
 SITE_KEEP = {
     # Terms, privacy and ad policies of Stars, gifts, mini apps and bots,
     # and the unsupported-message hints, in the built-in English strings.
@@ -1740,6 +1740,8 @@ def patch(tree, c):
     # pluma.chat links instead of t.me ones.
     link_host(tree)
 
+    help_section(tree)
+
 
 def verify(tree, c):
     """Checks the result independently of how the edits were made."""
@@ -1863,6 +1865,8 @@ def verify(tree, c):
                 raise PatchError(f"{rel}: {found} telegram.org hosts, expected {SITE_KEEP.get(rel, 0)}; "
                                  "does it lead the user to Telegram's services?")
 
+    verify_help_section(sources)
+
 
 
 # --- Premium for everyone -----------------------------------------------------
@@ -1898,6 +1902,33 @@ PREMIUM_FOR_EVERYONE_EDITS = (
      "        show: () => !!solidState.store.slowModeSeconds\n",
      "        show: () => false // pluma: boosts do not exist here (ADR 0041)\n"),
 )
+
+
+# --- help ------------------------------------------------------------------
+#
+# The section that ends Settings: the FAQ on telegram.org and the volunteers'
+# support of Telegram (help.getSupport), as the other Pluma clients have none.
+
+SETTINGS = "src/components/sidebarLeft/tabs/settings.tsx"
+SETTINGS_SEARCH = "src/lib/settingsSearch/generated.ts"
+
+
+def help_section(tree):
+    tree.replace(SETTINGS, "import askQuestion, {openTelegramFaq} from '@components/askQuestion';\n", "")
+    tree.replace_block(SETTINGS, "      {/* help, the way tdesktop ends its main settings */}\n", "      </Section>\n",
+                       "      {/* pluma: no help section: the FAQ and the volunteers' support are Telegram's. */}\n",
+                       must_contain=("openTelegramFaq", "askQuestion(", "'AskAQuestion'"))
+    for key in ("AskAQuestion", "TelegramFaq"):
+        tree.replace(SETTINGS_SEARCH,
+                     f"    {{id: 'AppSettingsTab:{key}', sectionId: 'AppSettingsTab', kind: 'row', titleLangKey: '{key}'}},\n",
+                     "")
+
+
+def verify_help_section(sources):
+    for rel in (SETTINGS, SETTINGS_SEARCH):
+        for s in ("openTelegramFaq", "askQuestion(", "AskAQuestion", "TelegramFaq"):
+            if s in sources[rel]:
+                raise PatchError(f"{rel}: {s!r} is still there; Settings has no help section")
 
 
 def premium_for_everyone(tree):
