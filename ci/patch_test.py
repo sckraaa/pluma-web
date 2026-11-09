@@ -168,7 +168,7 @@ def config(**over):
 class ConfigTest(unittest.TestCase):
     def test_repository_config(self):
         c = config()
-        self.assertEqual((c.app_name, c.api_id, c.layer), ("Pluma", 10004, 228))
+        self.assertEqual((c.app_name, c.api_id, c.layer), ("Pluma", 10004, 233))
         self.assertRegex(c.api_hash, r"\A[0-9a-f]{32}\Z")
         self.assertEqual(c.fingerprint, 14037083214707814241)
         self.assertEqual(len(c.modulus), 512)
@@ -320,6 +320,7 @@ CHATLIST = "src/scss/partials/_chatlist.scss"
 BIRTHDAYS = "src/components/sidebarLeft/birthdaySuggestions.tsx"
 PROFILE = "src/components/peerProfile.tsx"
 PEER_COLORS = "src/lib/appManagers/utils/peers/getPeerColorById.ts"
+DIALOG_COLORS = "src/lib/appManagers/utils/peers/dialogColors.ts"
 ARCHIVE = "src/components/archiveDialog.module.scss"
 FEATURE_ICON = "src/components/featureDetailsIconSticker.module.scss"
 SAVED_TAGS = "src/lib/appManagers/utils/reactions/savedTagsAvailable.ts"
@@ -341,10 +342,8 @@ DAMAGE = (
     *((rel, old, old.replace("(", "( ", 1) if "(" in old else old.replace("= ", "=  ", 1))
       for rel, old, _ in patch.PREMIUM_STICKER_GATES),
     ("src/components/chat/input.ts", patch.EFFECT_THUMB_IMPORT, patch.EFFECT_THUMB_IMPORT.replace("import ", "import type ", 1)),
-    ("src/lib/appManagers/appStickersManager.ts", "    const stickerSet = this.storage.getFromCache(cacheKey);\n    set = stickerSet.set;",
-     "    const stickerSet = this.storage.getFromCache(cacheKey)!;\n    set = stickerSet.set;"),
-    ("src/lib/mtproto/schema.ts", '"layer":228', '"layer":229'),
-    ("public/version", "2.2 (676)", "2.3 (700)"),
+    ("src/lib/mtproto/schema.ts", '"layer":233', '"layer":234'),
+    ("public/version", "2.3 (686)", "2.3 (700)"),
     ("package.json", '"pnpm@11.16.0"', '"pnpm@11.17.0"'),
     ("package.json", '"^22.18.0 || >=24.11.0"', '">=26.0.0"'),
     (DC, "export function constructTelegramWebSocketUrl(_dcId", "export function constructTelegramWebSocketUrl(dcId"),
@@ -362,7 +361,8 @@ DAMAGE = (
     (APP, "id: +import.meta.env.VITE_API_ID,", "id: Number(import.meta.env.VITE_API_ID),"),
     (APP, "hash: import.meta.env.VITE_API_HASH,", "hash: String(import.meta.env.VITE_API_HASH),"),
     (APP, "pushServerKey: import.meta.env.VITE_PUSH_SERVER_KEY,", "pushServerKey: import.meta.env.VITE_PUSH_KEY,"),
-    (APP, "baseDcId: 2 as TrueDcId,", "baseDcId: 4 as TrueDcId,"),
+    (APP, "baseDcId: BASE_DC_ID as TrueDcId,", "baseDcId: 4 as TrueDcId,"),
+    (patch.BASE_DC, "export const BASE_DC_ID = 2;", "export const BASE_DC_ID = 4;"),
     (APP, "App.id = 2496;", "App.id = 2496; App.suffix = 'W';"),
     ("src/pages/cards/SignInCard.tsx", "new Set([1, 2, 3, 4, 5])", "new Set([1, 2, 3, 4, 5, 6])"),
     ("src/lib/telegramMeWebManager.ts", "public setAuthorized(canRedirect: boolean) {", "public setAuthorized(canRedirect: boolean, force?: boolean) {"),
@@ -394,7 +394,8 @@ DAMAGE = (
     ("src/langSign.ts", "'Sign in to Telegram'", "'Sign in'"),
     ("src/lang.ts", "'TelegramFeaturesUrl': 'https://t.me/TelegramTips'", "'TelegramFeaturesUrl': 'https://t.me/Tips'"),
     (SIDEBAR, "btnMenuFooter.href = 'https://github.com/morethanwords/tweb", "btnMenuFooter.href = 'https://github.com/tweb"),
-    (SIDEBAR, "`Telegram Web${App.suffix} ${App.version}", "`Telegram Web ${App.suffix} ${App.version}"),
+    (APP, "`Telegram Web${App.suffix} ${App.version}", "`Telegram Web ${App.suffix} ${App.version}"),
+    (SIDEBAR, "  t.textContent = getAppVersionText();\n", "  t.textContent = 'Telegram Web';\n"),
     (SIDEBAR, "a.href = 'https://bugs.telegram.org/?tag_ids=40&sort=time';", "a.href = 'https://bugs.telegram.org/';"),
     ("src/lib/appManagers/apiUpdatesManager.ts", "**Telegram Web${App.suffix} ${langStr}", "**Telegram Web ${langStr}"),
     ("src/lib/appManagers/appMessagesManager.ts", "first_name: 'Telegram',\n        phone: '42777'",
@@ -410,11 +411,10 @@ DAMAGE = (
      "export const RESOLVE = 'tg://resolve';\nexport default function wrapUrl("),
     # The colours.
     (THEME, "    'primary-color': '#3390ec',\n", "    'primary-color': '#3390EC',\n"),
-    (THEME, "    'link-color': '#8774E1', // SCSS resolves", "    'link-color': '#8774E1', // resolves"),
-    (THEME, "import {changeColorAccent, ColorRgb, getAccentColor,", "import {changeColorAccent, getAccentColor, ColorRgb,"),
+    (THEME, "import {changeColorAccent, ColorRgb, ensureTextContrast,", "import {changeColorAccent, ensureTextContrast, ColorRgb,"),
     (THEME, "      hex: newAccentHex,\n      darkenAlpha: 0.04\n", "      hex: newAccentHex,\n      darkenAlpha: 0.05\n"),
     (THEME, "    if(!isNight/*  || true */) {\n", "    if(!isNight) {\n"),
-    (THEME, "hex: isNight ? '#ffffff' : rgbaToHexa(", "hex: isNight ? '#fff' : rgbaToHexa("),
+    (THEME, "hex: isNight ? '#ffffff' : outgoingGradient ?", "hex: isNight ? '#fff' : outgoingGradient ?"),
     (STATE, "    accent_color: 0x3390ec,\n", "    accent_color: 0x3390EC,\n"),
     (STATE, "        fourth_background_color: 0x4f5bd5\n", "        fourth_background_color: 0x4f5bd6\n"),
     (STATE, "  baseThemeNight: 'hsla(299.142857,", "  baseThemeNight: 'hsla(299.14,"),
@@ -429,8 +429,8 @@ DAMAGE = (
     # or cyan in a place the patch does not know.
     (BASE, '@include avatar-color("cyan", #53edd6, #28c9b7);', '@include avatar-color("cyan", #53EDD6, #28C9B7);'),
     (PEER_COLORS, "['#309EBA'], ['#368AD1']", "['#309EBA'], ['#3E88F7']"),
-    (PEER_COLORS, "['#C7508B']],", "['#C7508B'], ['#A0A0A0']],"),
-    (PEER_COLORS, "'cyan', 'blue', 'pink'] as const;", "'blue', 'cyan', 'pink'] as const;"),
+    (PEER_COLORS, "['#C7508B']];", "['#C7508B'], ['#A0A0A0']];"),
+    (DIALOG_COLORS, "'cyan', 'blue', 'pink'] as const;", "'blue', 'cyan', 'pink'] as const;"),
     (PEER_COLORS, "const _DialogColorsFg = DialogColorsFg;", "const _DialogColorsFg = [...DialogColorsFg];"),
     (PEER_COLORS, "replaceColors(_DialogColorsFg.slice(), peerColorOptions);",
      "replaceColors(_DialogColorsFg.slice(), peerColorOptions || []);"),
@@ -443,11 +443,16 @@ DAMAGE = (
     (BASE, "--avatar-color-story-unread-to: #3da1fd;", "--avatar-color-story-unread-to: #3DA1FD;"),
     (BASE, "--message-checkbox-color: #61c642;", "--message-checkbox-color: #61C642;"),
     (BASE, "--message-out-time-color: rgba(255, 255, 255, .6);", "--message-out-time-color: rgba(255, 255, 255, .5);"),
+    ("src/components/wallet/wallet.module.scss", "linear-gradient(#70a7db, #408acf)", "linear-gradient(#70a7db, #408acf 90%)"),
     (BASE, "  --badge-text-color: #fff;\n  --original-ripple-color", "  --badge-text-color: white;\n  --original-ripple-color"),
     ("src/scss/partials/_button.scss", ".btn-color-primary {\n  background: var(--primary-color);\n  color: #fff;",
      ".btn-color-primary {\n  background: var(--primary-color);\n  color: white;"),
-    ("src/scss/partials/_chat.scss", "    color: #fff !important;\n    background-color: var(--primary-color) !important;",
-     "    background-color: var(--primary-color) !important;\n    color: #fff !important;"),
+    ("src/scss/partials/_chat.scss", "    color: #fff !important;\n    background-color: var(--primary-color) !important;\n\t\tz-index: 3;",
+     "    background-color: var(--primary-color) !important;\n    color: #fff !important;\n\t\tz-index: 3;"),
+    ("src/components/popups/starGiftValue.module.scss", "  background: var(--primary-button-color);\n  color: #fff;",
+     "  background: var(--primary-button-color);\n  color: white;"),
+    ("src/components/wallet/tonConnect/tonConnect.module.scss", "  background-color: var(--primary-color);\n  color: #fff;",
+     "  background-color: var(--primary-color);\n  color: white;"),
     ("src/scss/partials/_checkbox.scss", "        stroke: #fff;\n", "        stroke: white;\n"),
     ("src/components/popups/webAppLocationAccess.module.scss", "color: var(--white);", "color: #fff;"),
     (FEATURE_ICON, "  &:global(.background-gradient-stories) {\n",
@@ -482,17 +487,20 @@ DAMAGE = (
     (BIRTHDAYS, "import {i18n} from '@lib/langPack';", "import {i18n, I18n} from '@lib/langPack';"),
     (BIRTHDAYS, "import {useAppState} from '@stores/appState';", "import {useAppConfig} from '@stores/appState';"),
     (BIRTHDAYS, "import {createEffect, createMemo,", "import {createEffect, createComputed, createMemo,"),
-    (BIRTHDAYS, "// Preview-only: 1 opens the gift popup directly,", "// Preview only: 1 opens the gift popup directly,"),
     (BIRTHDAYS, "showSendGiftPopup({peerId, birthday: birthdayPeerIds().has(peerId)});",
      "showSendGiftPopup({peerId, birthday: true});"),
     (BIRTHDAYS, "      prependPeerIds: nearbyContacts().map(({peerId}) => peerId),\n",
      "      prependPeerIds: contacts().map(({peerId}) => peerId),\n"),
     (BIRTHDAYS, "{i18n('Suggestion.BirthdayContacts.Subtitle')}", "{i18n('Suggestion.BirthdayContacts.Gift')}"),
     (BIRTHDAYS, "  const [{appConfig}] = useAppState();", "  const [{appConfig, premium}] = useAppState();"),
-    (BIRTHDAYS, "TEST_BIRTHDAY_CONTACTS || !appConfig.premium_purchase_blocked;",
-     "TEST_BIRTHDAY_CONTACTS || !appConfig.premium_purchase_blocked && !appConfig.stars_purchase_blocked;"),
-    (BIRTHDAYS, "      canLoadBirthdayContacts() &&\n      promoDataLoaded() &&\n",
-     "      promoDataLoaded() &&\n      canLoadBirthdayContacts() &&\n"),
+    (BIRTHDAYS, "() => !appConfig.premium_purchase_blocked;",
+     "() => !appConfig.premium_purchase_blocked && !appConfig.stars_purchase_blocked;"),
+    (BIRTHDAYS, "    canLoadBirthdayContacts() &&\n    promoDataLoaded() &&\n",
+     "    promoDataLoaded() &&\n    canLoadBirthdayContacts() &&\n"),
+    (BIRTHDAYS, "    if(canLoadBirthdayContacts()) void loadContactBirthdays(true);\n",
+     "    if(canLoadBirthdayContacts()) void loadContactBirthdays();\n"),
+    (BIRTHDAYS, "    if(canLoadBirthdayContacts()) {\n      void loadContactBirthdays();\n",
+     "    if(canLoadBirthdayContacts() && !destroyed) {\n      void loadContactBirthdays();\n"),
     (BIRTHDAYS, "    if(!canLoadBirthdayContacts()) {\n", "    if(!canLoadBirthdayContacts() || !promoDataLoaded()) {\n"),
     (BIRTHDAYS, "appGiftsManager.getStarGiftOptions().catch(() => {});", "appGiftsManager.getStarGiftOptions().catch(noop);"),
     (BIRTHDAYS, "toastNew({langPackKey: 'Suggestion.BirthdayContacts.Dismissed'});",
@@ -504,25 +512,23 @@ DAMAGE = (
     # function asked outside the tag gates.
     (CONTEXT_MENU, "      if(this.isTag && !rootScope.premium) {\n", "      if(this.isTag && !rootScope.isPremium) {\n"),
     (CONTEXT_MENU, "          if(!rootScope.premium && tags) {\n", "          if(tags && !rootScope.premium) {\n"),
-    (CONTEXT_MENU, "import showPremiumPopup from '@components/popups/premium';\n",
-     "import showPremiumPopup from '@components/popups/premium/index';\n"),
+    (CONTEXT_MENU, patch._GUARD_WITH_PROVIDER, patch._GUARD_WITH_PROVIDER.replace("import ", "import type ", 1)),
     (CONTEXT_MENU, "  private onAddTaskClick = async() => {\n",
-     "  private onTagsPromo = () => showPremiumPopup({feature: 'saved_tags'});\n\n  private onAddTaskClick = async() => {\n"),
-    (BUBBLES, "        if(!rootScope.premium) {\n          showPremiumPopup({feature: 'saved_tags'});\n",
-     "        if(!this.chat.isPremium) {\n          showPremiumPopup({feature: 'saved_tags'});\n"),
+     "  private onTagsPromo = () => hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n\n  private onAddTaskClick = async() => {\n"),
+    (BUBBLES, "        if(!rootScope.premium) {\n          hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n",
+     "        if(!this.chat.isPremium) {\n          hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n"),
     (BUBBLES, "      if(reactionsElement.getType() === ReactionLayoutType.Tag) {\n",
      "      if(reactionsElement.getType() === ReactionLayoutType.Tag && !rootScope.premium) {\n"
-     "        showPremiumPopup({feature: 'saved_tags'});\n        return;\n      }\n\n"
+     "        hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n        return;\n      }\n\n"
      "      if(reactionsElement.getType() === ReactionLayoutType.Tag) {\n"),
     (TOPBAR_SEARCH, "import usePremium from '@stores/premium';\n", "import usePremium from '@stores/premium.ts';\n"),
     (TOPBAR_SEARCH, "  const isPremium = usePremium();\n", "  const isPremium = usePremium() as () => boolean;\n"),
     (TOPBAR_SEARCH, "    const premium = isPremium();\n", "    const premium = isPremium() || false;\n"),
-    (TOPBAR_SEARCH, "      if(!isPremium()) {\n        showPremiumPopup({feature: 'saved_tags'});\n",
-     "      if(isPremium() === false) {\n        showPremiumPopup({feature: 'saved_tags'});\n"),
+    (TOPBAR_SEARCH, "      if(!isPremium()) {\n        hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n",
+     "      if(isPremium() === false) {\n        hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n"),
     (REACTIONS_MENU, "        rootScope.premium ? 'Reactions.Tag.Description' : 'Reactions.Tag.PremiumHint',\n",
      "        this.premium ? 'Reactions.Tag.Description' : 'Reactions.Tag.PremiumHint',\n"),
-    (REACTIONS_MENU, "import showPremiumPopup from '@components/popups/premium';\n",
-     "import showPremiumPopup from '@components/popups/premium/index';\n"),
+    (REACTIONS_MENU, patch._GUARD, patch._GUARD.replace("import ", "import type ", 1)),
     ("src/lib/appManagers/apiManagerMethods.ts",
      "        reactions: ['reactions_user_max_default', 'reactions_user_max_premium'],\n",
      "        reactions: 'reactions_user_max_premium',\n"),
@@ -537,7 +543,19 @@ DAMAGE = (
      "  const match = matchUrlHost(url, TELEGRAM_LINK_HOSTS, true);\n"),
     (MATCH_HOST, "const TELEGRAM_LINK_HOSTS = ['t.me', 'telegram.me'];", "const TELEGRAM_LINK_HOSTS = ['t.me'];"),
     ("src/helpers/addAnchorListener.ts", "const match = matchTelegramUrlHost(u);", "const match = matchUrlHost(u, ['t.me']);"),
-    ("src/helpers/dom/anchorCopy.ts", "const T_ME = 'https://t.me/';", "const T_ME = 'https://t.me/' as const;"),
+    ("src/helpers/copyContact.ts", "export const T_ME = 'https://t.me/';", "export const T_ME = 'https://t.me/' as const;"),
+    ("src/components/popups/myQrCode/link.ts", "  return `https://t.me/+${phone}`;", "  return 'https://t.me/+' + phone;"),
+    ("src/lib/appManagers/utils/stories/storyLink.ts", "  return `https://t.me/${username}/s/${storyId}`;",
+     "  return `https://t.me/s/${username}/${storyId}`;"),
+    ("src/components/sidebarLeft/tabs/businessChatLinks.tsx", "copyLink('https://t.me/' + path)", "copyLink(`https://t.me/${path}`)"),
+    # The links of the new version: a tg: link of each kind the patch turns
+    # into plm:, a new tg: link it does not know, and a telegram.org host.
+    ("src/lib/richTextProcessor/wrapRichText.ts", "'tg://sendgrams?to='", "'tg://sendgrams/?to='"),
+    ("src/helpers/string/normalizeLinkUrl.ts", "url.protocol === 'tg:'", "url.protocol == 'tg:'"),
+    ("src/components/chat/inputEditor/richMessage.ts", "url.startsWith('tg://user?')", "url.startsWith('tg://user/?')"),
+    ("src/lib/appManagers/utils/richMessage/validateRichMessage.ts", "'tg:', 'tonsite:'", "'tonsite:', 'tg:'"),
+    ("src/lib/internalLinkProcessor.ts", "element.href.replace(/^tg:(?:", "element.href.replace(/^(?:tg):(?:"),
+    ("src/helpers/copyContact.ts", "export function copyPeerId(", "const FAQ = 'https://telegram.org/faq';\nexport function copyPeerId("),
     ("src/components/chat/bubbleParts/adminLogsResolver/index.tsx", "lines.push(`https://t.me/${action.new_value}`);",
      "lines.push('https://t.me/' + action.new_value);"),
     (PROFILE, "exportedInvite.link.indexOf('t.me/')", "exportedInvite.link.indexOf('/t.me/')"),
@@ -637,6 +655,7 @@ class UpstreamTest(unittest.TestCase):
         self.assertNotIn("testPublicKeysHex", tree.read(RSA))
         app = tree.read(APP)
         self.assertIn("  id: 10004,\n", app)
+        self.assertIn("export const BASE_DC_ID = 1;\n", tree.read(patch.BASE_DC))
         self.assertIn("export const MAIN_DOMAINS: string[] = [];\n", app)
         self.assertNotIn("isMainDomain) {", app)
         self.assertNotIn("loadScript(", tree.read("src/lib/telegramMeWebManager.ts"))
@@ -664,7 +683,7 @@ class UpstreamTest(unittest.TestCase):
                   "'Premium.Boarding.Peer.Title': '[%@](profile) is a subscriber of\\nPluma Premium',",
                   "'TelegramFeaturesUrl': 'https://t.me/TelegramTips',"):
             self.assertIn(s, lang)
-        self.assertIn("t.textContent = `Pluma Web ${App.version} (${App.build})`;", tree.read(SIDEBAR))
+        self.assertIn("  return `Pluma Web ${App.version} (${App.build})`;\n", app)
         self.assertNotIn("'ReportBug'", tree.read(SIDEBAR))
         self.assertIn("const url = 'plm://login?token=' +", tree.read("src/pages/cards/SignQRCard.tsx"))
         self.assertIn("url.match(/^plm:(?:\\/\\/)?(.+?)(?:\\?|$)/)", tree.read("src/lib/richTextProcessor/wrapUrl.ts"))
@@ -689,7 +708,7 @@ class UpstreamTest(unittest.TestCase):
             self.assertIn(s, base)
         colors = tree.read(PEER_COLORS)
         for s in ("const DialogColorsFg: Array<string[]> = [['#CC5049'], ['#D67722'], ['#955CDB'], ['#40A920'], "
-                  "['#1F8A80'], ['#4F6E52'], ['#C7508B']],\n",
+                  "['#1F8A80'], ['#4F6E52'], ['#C7508B']];\n",
                   "const DialogColorsFgNight: {[colorId: number]: string[]} = {4: ['#53CCC6'], 5: ['#9DBB9F']};\n",
                   "const _DialogColorsFg = DialogColorsFg.slice();\n",
                   "    _DialogColorsFg.map((colors, colorId) => (isNight && DialogColorsFgNight[colorId]) || colors),\n",
@@ -711,8 +730,8 @@ class UpstreamTest(unittest.TestCase):
         birthdays = tree.read(BIRTHDAYS)
         for s in ("import showPickUserPopup from '@components/popups/pickUser';\n",
                   "import appImManager from '@lib/appImManager';\n",
-                  "    TEST_BIRTHDAY_CONTACTS || (\n      promoDataLoaded() &&\n"
-                  "      !dismissedSuggestions().has(BIRTHDAY_CONTACTS_TODAY_SUGGESTION_KEY)\n",
+                  "  const canShowBirthdayContacts = () => (\n    promoDataLoaded() &&\n"
+                  "    !dismissedSuggestions().has(BIRTHDAY_CONTACTS_TODAY_SUGGESTION_KEY)\n",
                   "  onMount(() => {\n    void loadContactBirthdays();\n  });\n",
                   "      openChat(contacts()[0].peerId);\n",
                   "    appImManager.setPeer({peerId});\n",
@@ -723,7 +742,7 @@ class UpstreamTest(unittest.TestCase):
                   "<PendingSuggestion.Subtitle>{i18n('SendMessageTitle')}</PendingSuggestion.Subtitle>",
                   # Closing it stays as upstream has it.
                   "closable={props.onDismiss}",
-                  "      rootScope.managers.appPromoManager.dismissSuggestion(BIRTHDAY_CONTACTS_TODAY_SUGGESTION_KEY);\n"):
+                  "    rootScope.managers.appPromoManager.dismissSuggestion(BIRTHDAY_CONTACTS_TODAY_SUGGESTION_KEY);\n"):
             self.assertIn(s, birthdays)
         for s in ("Gift", "premium_purchase_blocked", "appConfig", "toastNew", "useAppState", "nearbyContacts",
                   "canLoadBirthdayContacts", "createEffect"):
@@ -748,11 +767,11 @@ class UpstreamTest(unittest.TestCase):
                   "          if(!savedTagsAvailable() && tags) {\n",
                   "  private onAddTaskClick = async() => {\n    if(!rootScope.premium) {\n"):
             self.assertIn(s, menu)
-        self.assertIn("        if(!savedTagsAvailable()) {\n          showPremiumPopup({feature: 'saved_tags'});\n",
+        self.assertIn("        if(!savedTagsAvailable()) {\n          hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n",
                       tree.read(BUBBLES))
         search = tree.read(TOPBAR_SEARCH)
         for s in ("    const premium = savedTagsAvailable();\n",
-                  "      if(!savedTagsAvailable()) {\n        showPremiumPopup({feature: 'saved_tags'});\n"):
+                  "      if(!savedTagsAvailable()) {\n        hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n"):
             self.assertIn(s, search)
         for s in ("isPremium", "usePremium"):
             self.assertNotIn(s, search)
@@ -781,8 +800,21 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn("const PLUMA_SITE_PATHS = new Set(['iphone', 'ipad', 'android', 'mac', 'windows', 'linux', "
                       "'web', 'pero', 'app', 'en', 'dl', 'ios', 'collect', 'assets', '_l', '.well-known', "
                       "'favicon.svg', 'og.png', 'apple-touch-icon.png', '404.html', 'progress.json']);\n", match)
-        self.assertIn("const T_ME = 'https://pluma.chat/';", tree.read("src/helpers/dom/anchorCopy.ts"))
+        self.assertIn("const T_ME = 'https://pluma.chat/';", tree.read("src/helpers/copyContact.ts"))
         self.assertIn("    let url = 'https://pluma.chat/';\n", menu)
+        self.assertIn("  return `https://pluma.chat/+${phone}`;\n", tree.read("src/components/popups/myQrCode/link.ts"))
+        self.assertIn("  return `https://pluma.chat/${username}/s/${storyId}`;\n",
+                      tree.read("src/lib/appManagers/utils/stories/storyLink.ts"))
+        business = tree.read("src/components/sidebarLeft/tabs/businessChatLinks.tsx")
+        self.assertIn("copyLink('https://pluma.chat/' + path)", business)
+        self.assertIn("a.textContent = 'pluma.chat/' + path;", business)
+        # The tg: links of the new version.
+        self.assertIn("'plm://sendgrams?to='", tree.read("src/lib/richTextProcessor/wrapRichText.ts"))
+        self.assertIn("url.startsWith('plm://user?')", tree.read("src/components/chat/inputEditor/richMessage.ts"))
+        self.assertIn("  'plm:',\n", tree.read("src/helpers/string/normalizeLinkUrl.ts"))
+        self.assertIn("['http:', 'https:', 'plm:', 'tonsite:']",
+                      tree.read("src/lib/appManagers/utils/richMessage/validateRichMessage.ts"))
+        self.assertIn("element.href.replace(/^plm:(?:", tree.read("src/lib/internalLinkProcessor.ts"))
         self.assertIn("  return `https://pluma.chat/${username}`;\n", tree.read("src/helpers/qrCode/paintQrCode.ts"))
         self.assertEqual(tree.read("src/components/chat/bubbleParts/adminLogsResolver/index.tsx")
                          .count("pluma.chat/${action."), 4)
@@ -891,7 +923,7 @@ class BundleTest(unittest.TestCase):
             self.write(name, json.dumps({"name": "Pluma", "short_name": "Pluma"}))
         self.write("index.worker-abc.js",
                    f"function Re(e){{return Le(e),`{url}`}}var k=[{{modulus:`{modulus}`,exponent:`010001`}}];"
-                   f"var s={{API:{{}},layer:228}};var a={{id:10004,hash:`{api_hash}`}};"
+                   f"var s={{API:{{}},layer:233}};var a={{id:10004,hash:`{api_hash}`}};"
                    "var m={multipleTransports:!1};var t=`https://t.me/`+n;"
                    "var l={\"Login.Title\":`Sign in to Pluma`};"
                    "var q=`plm://login?token=`+o;")
@@ -943,7 +975,7 @@ class BundleTest(unittest.TestCase):
 
     def test_rejects_missing(self):
         code = (self.site / "index.worker-abc.js").read_text()
-        for gone in (self.record["server_url"], self.record["modulus"], self.record["api_hash"], "layer:228",
+        for gone in (self.record["server_url"], self.record["modulus"], self.record["api_hash"], "layer:233",
                      "Sign in to Pluma",
                      "plm://login?token="):
             with self.subTest(gone=gone[:30]):

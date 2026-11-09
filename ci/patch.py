@@ -79,6 +79,10 @@ RECORD = ".pluma-patch.json"
 BRAND = pathlib.Path(__file__).resolve().parent.parent / "brand"
 
 
+# The home datacenter: an account's state is kept under its auth key.
+BASE_DC = "src/lib/accounts/authKeyFingerprint.ts"
+
+
 class PatchError(Exception):
     pass
 
@@ -493,7 +497,7 @@ SCREENSHOT = ("assets/img/screenshot.jpg", "af2c7c5422f764adbc7f2f1febc254c978dc
 # app's name ("Pluma Premium", "Sign in to Pluma"); in a key, a comment or a
 # URL (t.me/TelegramTips) it stays: (file, words renamed, words left).
 STRINGS = (
-    ("src/lang.ts", 210, 30),
+    ("src/lang.ts", 272, 45),
     ("src/langSign.ts", 7, 0),
 )
 _STRING_ENTRY = re.compile(r"^(\s*'(?:[^'\\]|\\.)*':\s*)(.*)$")
@@ -511,6 +515,16 @@ PLM_LINKS = (
     ("src/lib/richTextProcessor/wrapRichText.ts", "'tg://bot_command?", 1),
     ("src/lib/richTextProcessor/index.ts", "'tg://search_hashtag?", 1),
     ("src/lib/settingsSearch/link.ts", "'tg://settings'", 1),
+    # A TON address in a message.
+    ("src/lib/richTextProcessor/wrapRichText.ts", "'tg://sendgrams?to='", 1),
+    # The rich message composer and its checks: the schemes a link may have,
+    # and a mention written as a link.
+    ("src/components/chat/inputEditor/richMessage.ts", "url.startsWith('tg://user?')", 1),
+    ("src/helpers/string/normalizeLinkUrl.ts", "  'tg:',\n", 1),
+    ("src/helpers/string/normalizeLinkUrl.ts", "url.protocol === 'tg:'", 1),
+    ("src/lib/appManagers/utils/richMessage/validateRichMessage.ts", "['http:', 'https:', 'tg:', 'tonsite:']", 1),
+    # What a plm: link nothing handles is told apart by.
+    ("src/lib/internalLinkProcessor.ts", "element.href.replace(/^tg:(?:", 1),
 )
 _TG_LINK = re.compile(r"['\"`]tg:|\^tg:")
 _COMMENT = re.compile(r"/\*.*?\*/|(?<![:\\])//[^\n]*", re.S)
@@ -533,7 +547,6 @@ THEME_COLORS = {
         ("background-color", "#f4f4f5", "#f4f5f4"),
         ("border-color", "#dfe1e5", "#dfe2df"),
         ("secondary-color", "#c4c9cc", "#c4c9c4"),
-        ("link-color", "#00488f", "#4f6e52"),
     ),
     "night": (
         ("primary-color", "#8774E1", "#9dbb9f"),
@@ -547,7 +560,6 @@ THEME_COLORS = {
         ("body-background-color", "#181818", "#0c0e0c"),
         ("border-color", "#0f0f0f", "#070807"),
         ("secondary-color", "#707579", "#6e756e"),
-        ("link-color", "#8774E1", "#b2ceb4"),
         ("input-search-background-color", "#181818", "#0c0e0c"),
     ),
 }
@@ -631,12 +643,8 @@ ON_PRIMARY = (
     ("src/scss/partials/_button.scss",
      "  background-color: var(--primary-color);\n" "  text-align: center;\n" "  font-size: 1.5rem;\n"
      "  color: #fff;\n"),
-    ("src/scss/partials/_button.scss",
-     "      background-color: var(--primary-color);\n" "      color: #fff;\n" "      padding: .125rem .3125rem;\n"),
-    ("src/scss/partials/_row.scss",
-     "      background-color: var(--primary-color);\n" "      color: #fff;\n" "      padding: .1875rem .3125rem;\n"),
     ("src/scss/partials/_chat.scss",
-     "\t.btn-send {\n" "    color: #fff !important;\n" "    background-color: var(--primary-color) !important;\n"),
+     "\t.btn-send {\n" "    --size: 2.5rem;\n" "    color: #fff !important;\n" "    background-color: var(--primary-color) !important;\n"),
     ("src/scss/partials/_chat.scss",
      "      background-color: var(--primary-color);\n" "      display: flex;\n" "      align-items: center;\n"
      "      padding: 0 .75rem;\n" "      // justify-content: center;\n"
@@ -654,8 +662,6 @@ ON_PRIMARY = (
      "      use {\n" "        stroke: #fff;\n"),
     ("src/scss/partials/_poll.scss",
      "        color: #fff;\n" "        background: var(--primary-color);\n"),
-    ("src/scss/partials/_replyKeyboard.scss",
-     "        background-color: var(--primary-color);\n" "        color: #fff !important;\n"),
     ("src/scss/partials/_searchSuper.scss",
      "        color: #fff;\n" "        text-transform: uppercase;\n" "        background-color: var(--primary-color);\n"),
     ("src/scss/partials/_topbarSearch.scss",
@@ -680,7 +686,9 @@ ON_PRIMARY = (
     ("src/components/popups/sendGift.module.scss",
      "  background-color: var(--primary-color);\n" "  color: #fff;\n"),
     ("src/components/popups/starGiftValue.module.scss",
-     "  background: var(--primary-color);\n" "  color: #fff;\n"),
+     "  background: var(--primary-button-color);\n" "  color: #fff;\n"),
+    ("src/components/wallet/tonConnect/tonConnect.module.scss",
+     "  background-color: var(--primary-color);\n" "  color: #fff;\n"),
     ("src/components/popups/webAppLocationAccess.module.scss",
      "  background: var(--primary-color);\n" "  color: var(--white);\n"),
 )
@@ -731,7 +739,7 @@ def rename_strings(tree, rel, name, renamed, left):
 
 
 PEER_COLORS = "src/lib/appManagers/utils/peers/getPeerColorById.ts"
-_NAME_COLORS = re.compile(r"^const DialogColorsFg: Array<string\[\]> = \[(\['#[0-9A-Fa-f]{6}'\](?:, \['#[0-9A-Fa-f]{6}'\])*)\],$",
+_NAME_COLORS = re.compile(r"^const DialogColorsFg: Array<string\[\]> = \[(\['#[0-9A-Fa-f]{6}'\](?:, \['#[0-9A-Fa-f]{6}'\])*)\];$",
                           re.M)
 
 
@@ -741,7 +749,8 @@ def identity_colors(tree):
     name colours of the light themes and of the dark ones, and the places
     that take an identity's avatar gradient as a plain colour."""
     rel = PEER_COLORS
-    tree.expect(rel, "  DialogColors = [" + ", ".join(f"'{n}'" for n in IDENTITIES) + "] as const;\n")
+    tree.expect("src/lib/appManagers/utils/peers/dialogColors.ts",
+                "export const DialogColors = [" + ", ".join(f"'{n}'" for n in IDENTITIES) + "] as const;\n")
     colors = {}
     for identity, table in IDENTITY_COLORS.items():
         if identity not in IDENTITIES or tuple(k for k, _, _ in table) != _IDENTITY_KEYS:
@@ -753,6 +762,9 @@ def identity_colors(tree):
         tree.replace("src/scss/base.scss",
                      f'  @include avatar-color("{identity}", {c["avatar top"][0]}, {c["avatar bottom"][0]});\n',
                      f'  @include avatar-color("{identity}", {c["avatar top"][1]}, {c["avatar bottom"][1]}); // pluma\n')
+    # The wallet's own blue, Telegram's blue identity at its end.
+    tree.replace("src/components/wallet/wallet.module.scss", "background: linear-gradient(#70a7db, #408acf);",
+                 "background: linear-gradient(var(--peer-avatar-blue-top), var(--peer-avatar-blue-bottom)); // pluma")
     for plain, identity in IDENTITY_AS_PLAIN:
         if identity not in colors:
             raise PatchError(f"IDENTITY_AS_PLAIN: {identity!r} is not in IDENTITY_COLORS")
@@ -777,7 +789,7 @@ def identity_colors(tree):
         names[i] = c["name"][1]
 
     def name_list(values):
-        return "const DialogColorsFg: Array<string[]> = [" + ", ".join(f"['{v}']" for v in values) + "],\n"
+        return "const DialogColorsFg: Array<string[]> = [" + ", ".join(f"['{v}']" for v in values) + "];\n"
 
     tree.replace(rel, name_list(old_names),
                  f"// pluma: Pluma's {' and '.join(colors)}; the light themes' colours.\n" + name_list(names))
@@ -841,8 +853,9 @@ def rebrand(tree, c):
                  "  btnMenuFooter.href = 'https://github.com/morethanwords/tweb/blob/master/CHANGELOG.md';\n",
                  "  // pluma: the source of this build.\n"
                  f"  btnMenuFooter.href = '{SOURCE_URL}';\n")
-    tree.replace(side, "  t.textContent = `Telegram Web${App.suffix} ${App.version} (${App.build})`;\n",
-                 f"  t.textContent = `{name} Web ${{App.version}} (${{App.build}})`;\n")
+    tree.expect(side, "  t.textContent = getAppVersionText();\n")
+    tree.replace("src/config/app.ts", "  return `Telegram Web${App.suffix} ${App.version} (${App.build})`;\n",
+                 f"  return `{name} Web ${{App.version}} (${{App.build}})`;\n")
     tree.replace("src/lib/appManagers/apiUpdatesManager.ts",
                  "const pre = `**Telegram Web${App.suffix} ${langStr} ${newVersion}**\\n\\n`;",
                  f"const pre = `**{name} Web ${{langStr}} ${{newVersion}}**\\n\\n`;")
@@ -897,15 +910,9 @@ def rebrand(tree, c):
     for base, colors in THEME_COLORS.items():
         tree.replace_within(theme, f"  {base}: {{\n", "\n  },\n",
                             [(f"'{key}': '{old}'", f"'{key}': '{new}'", 1) for key, old, new in colors])
-    tree.replace(theme, "'link-color': '#b2ceb4', // SCSS resolves to var(--primary-color)\n",
-                 "'link-color': '#b2ceb4', // pluma: lighter than the accent\n")
     tree.replace(theme,
-                 "import {changeColorAccent, ColorRgb, getAccentColor, getAverageColor, getRgbColorFromTelegramColor, "
-                 "hexToRgb, hslaStringToHex, hslaStringToRgba, hslaToRgba, hsvToRgb, mixColors, rgbaToHexa, "
-                 "rgbaToHsla, rgbToHsv} from '@helpers/color';\n",
-                 "import {changeColorAccent, ColorRgb, computePerceivedBrightness, getAccentColor, getAverageColor, "
-                 "getRgbColorFromTelegramColor, hexToRgb, hslaStringToHex, hslaStringToRgba, hslaToRgba, hsvToRgb, "
-                 "mixColors, rgbaToHexa, rgbaToHsla, rgbToHsv} from '@helpers/color';\n")
+                 "import {changeColorAccent, ColorRgb, ensureTextContrast, getAccentColor, ",
+                 "import {changeColorAccent, ColorRgb, computePerceivedBrightness, ensureTextContrast, getAccentColor, ")
     tree.replace(theme,
                  "    applyAppColor({\n"
                  "      name: 'primary-color',\n"
@@ -938,10 +945,11 @@ def rebrand(tree, c):
                  "\n"
                  "    if(!isNight && !isBubbleColor) {\n")
     tree.replace(theme,
-                 "      hex: isNight ? '#ffffff' : rgbaToHexa(accentColor2 ? hsvToRgb(...accentColor2) : myMessagesAccent),\n",
+                 "      hex: isNight ? '#ffffff' : outgoingGradient ? keepReadableOnOutgoingMessageGradient(outgoingAccent, "
+                 "outgoingGradient) : outgoingAccent,\n",
                  "      // pluma: the outbox accent colours the time and checks of a dark theme too.\n"
-                 "      hex: accentColor2 ? rgbaToHexa(hsvToRgb(...accentColor2)) : "
-                 "(isNight ? '#ffffff' : rgbaToHexa(myMessagesAccent)),\n")
+                 "      hex: isNight && !accentColor2 ? '#ffffff' : outgoingGradient ? "
+                 "keepReadableOnOutgoingMessageGradient(outgoingAccent, outgoingGradient) : outgoingAccent,\n")
     for old, new in THEME_SETTINGS:
         tree.replace("src/config/state.ts", old, new)
     # Settings saved by a build before Pluma's colours keep Telegram's
@@ -1001,11 +1009,9 @@ def rebrand(tree, c):
                  "  --avatar-color-story-unread-from: #9DBB9F;\n  --avatar-color-story-unread-to: #5B7A5E;\n")
     tree.replace(base, "  --message-checkbox-color: #61c642;\n", "  --message-checkbox-color: var(--primary-color); // pluma\n")
     tree.replace(base,
-                 "  --message-out-link-color: #fff;\n"
                  "  --message-out-status-color: #fff;\n"
                  "  --message-out-time-color: rgba(255, 255, 255, .6);\n",
                  "  // pluma: the outbox accent (white unless a theme has one), as in the day theme.\n"
-                 "  --message-out-link-color: var(--message-out-primary-color);\n"
                  "  --message-out-status-color: var(--message-out-primary-color);\n"
                  "  --message-out-time-color: var(--message-out-status-color);\n")
     for rel, rule in ON_PRIMARY:
@@ -1031,9 +1037,9 @@ def rebrand(tree, c):
                  "          color: var(--on-primary-color); // pluma\n        }\n")
     chatlist = "src/scss/partials/_chatlist.scss"
     tree.replace(chatlist,
-                 "  .is-muted.backwards .dialog-subtitle-badge-pollvote {\n"
+                 "  .is-muted.backwards .dialog-subtitle-badge-gram {\n"
                  "    background-color: var(--chatlist-status-color);\n  }\n",
-                 "  .is-muted.backwards .dialog-subtitle-badge-pollvote {\n"
+                 "  .is-muted.backwards .dialog-subtitle-badge-gram {\n"
                  "    background-color: var(--chatlist-status-color);\n"
                  "    color: var(--on-primary-color); // pluma\n  }\n")
     tree.replace(chatlist,
@@ -1045,7 +1051,7 @@ def rebrand(tree, c):
     # The selected chat, filled with the accent.
     tree.replace_within(chatlist, "      &.active {\n        --background: var(--primary-color) !important;\n",
                         "\n      }\n", (
-                            ("#fff", "var(--on-primary-color)", 9),
+                            ("#fff", "var(--on-primary-color)", 11),
                             ("color: white;", "color: var(--on-primary-color);", 1),
                             ("rgba(255, 255, 255, .7)", "color-mix(in srgb, var(--on-primary-color) 70%, transparent)", 1),
                             ("rgba(255, 255, 255, .2)", "color-mix(in srgb, var(--on-primary-color) 20%, transparent)", 1),
@@ -1093,10 +1099,6 @@ def birthday_banner(tree):
                  "import appImManager from '@lib/appImManager';\n"
                  "import {i18n} from '@lib/langPack';\n")
     tree.replace(rel, "import {useAppState} from '@stores/appState';\n", "")
-    tree.replace(rel,
-                 "// Preview-only: 1 opens the gift popup directly, 2+ opens the recipient picker.\n",
-                 "// Preview-only: 1 opens the chat directly, 2+ opens the list of them to pick\n"
-                 "// from (pluma: not the gift popup and the recipient picker).\n")
 
     # The tap: the chat, not a gift.
     tree.replace(rel,
@@ -1170,16 +1172,22 @@ def birthday_banner(tree):
                  "import {createMemo, createResource, createSignal, onCleanup, onMount, Show} from 'solid-js';\n")
     tree.replace(rel, "  const [{appConfig}] = useAppState();\n", "")
     tree.replace(rel,
-                 "  const canLoadBirthdayContacts = () => TEST_BIRTHDAY_CONTACTS || !appConfig.premium_purchase_blocked;\n"
+                 "  const canLoadBirthdayContacts = () => !appConfig.premium_purchase_blocked;\n"
                  "  const canShowBirthdayContacts = () => (\n"
-                 "    TEST_BIRTHDAY_CONTACTS || (\n"
-                 "      canLoadBirthdayContacts() &&\n"
-                 "      promoDataLoaded() &&\n",
+                 "    canLoadBirthdayContacts() &&\n"
+                 "    promoDataLoaded() &&\n",
                  "  // pluma: whether Premium is for sale does not matter: the banner leads\n"
                  "  // to the chat, not to a gift.\n"
                  "  const canShowBirthdayContacts = () => (\n"
-                 "    TEST_BIRTHDAY_CONTACTS || (\n"
-                 "      promoDataLoaded() &&\n")
+                 "    promoDataLoaded() &&\n")
+    tree.replace(rel,
+                 "    if(canLoadBirthdayContacts()) void loadContactBirthdays(true);\n",
+                 "    void loadContactBirthdays(true);\n")
+    tree.replace(rel,
+                 "    if(canLoadBirthdayContacts()) {\n"
+                 "      void loadContactBirthdays();\n"
+                 "    }\n",
+                 "    void loadContactBirthdays();\n")
     tree.replace(rel,
                  "  createEffect(() => {\n"
                  "    if(!canLoadBirthdayContacts()) {\n"
@@ -1232,13 +1240,15 @@ def birthday_row(tree):
 
 SAVED_TAGS = "src/lib/appManagers/utils/reactions/savedTagsAvailable.ts"
 SAVED_TAGS_IMPORT = "import savedTagsAvailable from '@appManagers/utils/reactions/savedTagsAvailable';\n"
-PREMIUM_POPUP_IMPORT = "import showPremiumPopup from '@components/popups/premium';\n"
 CONTEXT_MENU = "src/components/chat/contextMenu.ts"
 BUBBLES = "src/components/chat/bubbles.ts"
 TOPBAR_SEARCH = "src/components/chat/topbarSearch.tsx"
 REACTIONS_MENU = "src/components/chat/reactionsMenu.ts"
-# The files of the tag gates, the only ones that call savedTagsAvailable.
-SAVED_TAG_GATES = (CONTEXT_MENU, BUBBLES, TOPBAR_SEARCH, REACTIONS_MENU)
+# The files of the tag gates, the only ones that call savedTagsAvailable,
+# and the import each adds to (they open the popup through hotReloadGuard).
+_GUARD_WITH_PROVIDER = "import SolidJSHotReloadGuardProvider, {hotReloadGuard} from '@lib/solidjs/hotReloadGuardProvider';\n"
+_GUARD = "import {hotReloadGuard} from '@lib/solidjs/hotReloadGuardProvider';\n"
+SAVED_TAG_GATES = {CONTEXT_MENU: _GUARD_WITH_PROVIDER, BUBBLES: _GUARD_WITH_PROVIDER, TOPBAR_SEARCH: _GUARD, REACTIONS_MENU: _GUARD}
 
 
 def saved_tags(tree):
@@ -1262,8 +1272,8 @@ def saved_tags(tree):
                "export default function savedTagsAvailable() {\n"
                "  return true;\n"
                "}\n")
-    for rel in SAVED_TAG_GATES:
-        tree.replace(rel, PREMIUM_POPUP_IMPORT, PREMIUM_POPUP_IMPORT + SAVED_TAGS_IMPORT)
+    for rel, guard in SAVED_TAG_GATES.items():
+        tree.replace(rel, guard, guard + SAVED_TAGS_IMPORT)
     # How many tags a message takes: the server's limit, none of the client's.
     tree.expect("src/lib/appManagers/apiManagerMethods.ts",
                 "        reactions: ['reactions_user_max_default', 'reactions_user_max_premium'],\n")
@@ -1272,28 +1282,27 @@ def saved_tags(tree):
     # A right click on a tag opens its menu (filter by it, rename it).
     tree.replace(CONTEXT_MENU,
                  "      if(this.isTag && !rootScope.premium) {\n"
-                 "        showPremiumPopup({feature: 'saved_tags'});\n",
+                 "        hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n",
                  "      if(this.isTag && !savedTagsAvailable()) {\n"
-                 "        showPremiumPopup({feature: 'saved_tags'});\n")
+                 "        hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n")
     # A tag picked in the reactions of the context menu is put on the message.
     tree.replace(CONTEXT_MENU,
                  "          if(!rootScope.premium && tags) {\n"
-                 "            showPremiumPopup({feature: 'saved_tags'});\n",
+                 "            hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n",
                  "          if(!savedTagsAvailable() && tags) {\n"
-                 "            showPremiumPopup({feature: 'saved_tags'});\n")
+                 "            hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n")
     # A click on a tag of a message filters the chat by it.
     tree.replace(BUBBLES,
                  "      if(reactionsElement.getType() === ReactionLayoutType.Tag) {\n"
                  "        if(!rootScope.premium) {\n"
-                 "          showPremiumPopup({feature: 'saved_tags'});\n",
+                 "          hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n",
                  "      if(reactionsElement.getType() === ReactionLayoutType.Tag) {\n"
                  "        if(!savedTagsAvailable()) {\n"
-                 "          showPremiumPopup({feature: 'saved_tags'});\n")
+                 "          hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n")
     # The tags above the search of Saved Messages: not locked, no "Unlock"
     # tag, and a click filters by the tag. The file asked Premium for nothing
     # else.
-    tree.replace(TOPBAR_SEARCH, PREMIUM_POPUP_IMPORT + SAVED_TAGS_IMPORT + "import usePremium from '@stores/premium';\n",
-                 PREMIUM_POPUP_IMPORT + SAVED_TAGS_IMPORT)
+    tree.replace(TOPBAR_SEARCH, "import usePremium from '@stores/premium';\n", "")
     tree.replace(TOPBAR_SEARCH, "  const isPremium = usePremium();\n", "")
     tree.replace(TOPBAR_SEARCH,
                  "    const premium = isPremium();\n"
@@ -1302,9 +1311,9 @@ def saved_tags(tree):
                  "    element.classList.toggle('is-locked', !premium);\n")
     tree.replace(TOPBAR_SEARCH,
                  "      if(!isPremium()) {\n"
-                 "        showPremiumPopup({feature: 'saved_tags'});\n",
+                 "        hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n",
                  "      if(!savedTagsAvailable()) {\n"
-                 "        showPremiumPopup({feature: 'saved_tags'});\n")
+                 "        hotReloadGuard.showPremiumPopup({feature: 'saved_tags'});\n")
     # The hint above the tags of the reactions menu: what tags are for, not
     # the offer of Premium.
     tree.replace(REACTIONS_MENU,
@@ -1343,8 +1352,8 @@ PREMIUM_STICKER_GATES = (
      "        if(isPremiumFeaturesHidden && !premiumStickersAvailable() && getStickerEffectThumb(document)) {\n"),
     # Stickers found for an emoji.
     ("src/lib/appManagers/appStickersManager.ts",
-     "          (excludePremiumEffectStickers && !this.rootScope.premium && getStickerEffectThumb(sticker))) {\n",
-     "          (excludePremiumEffectStickers && !premiumStickersAvailable() && !this.rootScope.premium && getStickerEffectThumb(sticker))) {\n"),
+     "        (excludePremiumEffectStickers && !this.rootScope.premium && getStickerEffectThumb(sticker))) {\n",
+     "        (excludePremiumEffectStickers && !premiumStickersAvailable() && !this.rootScope.premium && getStickerEffectThumb(sticker))) {\n"),
     # The lock on them.
     ("src/components/wrappers/sticker.ts",
      "  const willHaveLock = effectThumb && withLock;\n",
@@ -1415,7 +1424,7 @@ LINK_SITE_CHECK = ("  if(matchUrlHost(url, [PLUMA_LINK_HOST])?.subdomain === '')
 # text becomes pluma.chat/.
 LINK_BUILDERS = (
     # The profile's username and t.me links (Settings, the chat's info).
-    ("src/helpers/dom/anchorCopy.ts", "const T_ME = 'https://t.me/';", 1),
+    ("src/helpers/copyContact.ts", "export const T_ME = 'https://t.me/';\n", 1),
     # Message links: Copy Link of the context menu and of the forward popup.
     (CONTEXT_MENU, "    let url = 'https://t.me/';\n", 1),
     ("src/components/popups/forward.tsx", "    let url = 'https://t.me/';\n", 1),
@@ -1424,13 +1433,14 @@ LINK_BUILDERS = (
     (PROFILE, "        url: 't.me/' + usernames[0],\n", 1),
     # QR codes of the My QR code popup: username, phone, channel.
     ("src/helpers/qrCode/paintQrCode.ts", "  return `https://t.me/${username}`;\n", 1),
-    ("src/components/popups/myQrCode.tsx", "return `https://t.me/+${(self as User.user).phone ?? ''}`;", 1),
     ("src/components/popups/myQrCode.tsx", "    return `https://t.me/c/${peerId.toChatId()}`;\n", 1),
+    ("src/components/popups/myQrCode/link.ts", "  return `https://t.me/+${phone}`;\n", 1),
+    # The links of a Business account, shown and copied.
+    ("src/components/sidebarLeft/tabs/businessChatLinks.tsx", "copyLink('https://t.me/' + path)", 1),
+    ("src/components/sidebarLeft/tabs/businessChatLinks.tsx", "a.textContent = 't.me/' + path;", 1),
     # Stories, story albums and gift collections of a profile.
-    ("src/components/stories/profileList.tsx", "copyTextToClipboard(`https://t.me/${username}/s/${this.storyItem.id}`);", 1),
+    ("src/lib/appManagers/utils/stories/storyLink.ts", "  return `https://t.me/${username}/s/${storyId}`;\n", 1),
     ("src/components/stories/profileList.tsx", "copyTextToClipboard(`https://t.me/${username}/a/${id}`);", 1),
-    ("src/components/stories/viewer.tsx",
-     "copyTextToClipboard(`https://t.me/${getPeerActiveUsernames(peer)[0]}/s/${currentStory().id}`);", 1),
     ("src/components/stargifts/profileList.tsx", "copyTextToClipboard(`https://t.me/${username}/c/${id}`)", 1),
     # Sticker and emoji sets.
     ("src/components/popups/stickers.tsx", "const prefix = `https://t.me/${isEmojis ? 'addemoji' : 'addstickers'}/`;", 1),
@@ -1466,13 +1476,24 @@ LINK_KEEP = {
     "src/lib/richTextProcessor/wrapRichText.ts": 1,
     "src/lib/richTextProcessor/wrapTopicThreadAnchor.ts": 1,
     "src/helpers/getWebViewTgLink.ts": 1,
+    "src/components/popups/premium.tsx": 1,
+    "src/components/stories/viewer.tsx": 1,
+    # The base a relative link is parsed against, for its scheme.
+    "src/lib/appManagers/utils/richMessage/validateRichMessage.ts": 1,
+    # Mini apps and widgets: their API is Telegram's as window.Telegram is
+    # (openTelegramLink takes these hosts), and a TON Connect link is told by
+    # it; the wallet is not released (lib/wallet/release.ts) and the server
+    # does not serve it.
+    "src/vendor/widget-sandbox/src/sandbox/globals.ts": 4,
+    "src/vendor/widget-sandbox/src/shared/sdk-policy.ts": 3,
+    "src/lib/wallet/tonConnectWire.ts": 1,
     # Telegram's own: gift codes, NFT gifts, styles, BotFather, its tips
     # channel and its account (frozen accounts).
     "src/lang.ts": 2,
     "src/components/popups/giftLink.tsx": 2,
     "src/components/popups/starGiftInfo.tsx": 2,
     "src/components/stargifts/stargiftsGrid.tsx": 2,
-    "src/components/premium/promoSlideTab.tsx": 1,
+    "src/components/premium/promoSlide.tsx": 1,
     "src/components/popups/starsPay.tsx": 1,
     "src/components/popups/aiEditorPopup/styleTab.tsx": 1,
     "src/components/sidebarRight/tabs/editBot.tsx": 1,
@@ -1480,11 +1501,43 @@ LINK_KEEP = {
     # The popup sandbox's sample data (a development page).
     "src/components/popupSandbox/fixtures.ts": 1,
     "src/components/popupSandbox/mockManagers.ts": 1,
-    "src/components/popupSandbox/stories/calls.ts": 2,
-    "src/components/popupSandbox/stories/chat.ts": 1,
+    "src/components/popupSandbox/stories/calls.ts": 3,
+    "src/components/popupSandbox/stories/chat.ts": 2,
+    "src/components/popupSandbox/stories/pickers.ts": 1,
+    "src/components/popupSandbox/stories/walletTonConnect.ts": 1,
     "src/components/popupSandbox/stories/featureDetails.ts": 1,
 }
 _TELEGRAM_LINK_HOST = re.compile(r"(?<![\w.-])(?:t|telegram)\.(?:me|dog)(?![\w-])")
+
+# The telegram.org hosts left in the code (comments aside), by file. A new
+# one upstream stops the patch until someone decides whether the user can
+# reach it: the links that lead to Telegram's services are taken away; these
+# stay.
+SITE_KEEP = {
+    # Terms, privacy and ad policies of Stars, gifts, mini apps and bots,
+    # and the unsupported-message hints, in the built-in English strings.
+    "src/lang.ts": 25,
+    "src/components/popups/starGiftInfo.tsx": 1,
+    "src/components/sidebarLeft/tabs/chatAutomation.tsx": 1,
+    "src/helpers/getBotPrivacyPolicy.ts": 1,
+    # The switch to Web A and the choice made for it: on Telegram's own
+    # domains only, and MAIN_DOMAINS is empty here.
+    "src/components/sidebarLeft/index.ts": 1,
+    "src/index.ts": 1,
+    # The wallet's proof of ownership, which names a domain and goes nowhere;
+    # the wallet is not released (lib/wallet/release.ts).
+    "src/lib/wallet/tonConnectWire.ts": 1,
+    "src/lib/wallet/walletSession.ts": 2,
+    # Sample data of the development pages.
+    "src/components/bubbleSandbox/states.ts": 1,
+    "src/components/chat/inputEditor/testData.ts": 8,
+    "src/components/popupSandbox/fixtures.ts": 3,
+    "src/components/popupSandbox/stories/misc.ts": 3,
+    "src/components/popupSandbox/stories/pickers.ts": 2,
+    "src/components/popupSandbox/stories/richEditor.ts": 1,
+    "src/components/popupSandbox/stories/walletTonConnect.ts": 1,
+}
+_TELEGRAM_SITE = re.compile(r"(?<![\w-])(?:[\w-]+\.)*telegram\.org(?![\w-])")
 
 
 def link_host(tree):
@@ -1523,7 +1576,7 @@ def link_host(tree):
 
 def patch(tree, c):
     # The upstream is the one upstream.env describes: the schema layer the
-    # server speaks (ADR 0008), the version, and the toolchain the CI installs.
+    # server speaks (ADR 0045), the version, and the toolchain the CI installs.
     layers = re.findall(r'"layer":(\d+)', tree.read("src/lib/mtproto/schema.ts"))
     if layers != [str(c.layer)]:
         raise PatchError(f"src/lib/mtproto/schema.ts: layer {', '.join(layers) or 'missing'}, "
@@ -1628,9 +1681,10 @@ def patch(tree, c):
     tree.replace(app, "  pushServerKey: import.meta.env.VITE_PUSH_SERVER_KEY,\n",
                  "  // pluma: no web push until the server sends it with a key of its own.\n"
                  "  pushServerKey: '',\n")
-    tree.replace(app, "  baseDcId: 2 as TrueDcId,\n",
-                 "  // pluma: the Pluma server is datacenter 1.\n"
-                 "  baseDcId: 1 as TrueDcId,\n")
+    tree.expect(app, "  baseDcId: BASE_DC_ID as TrueDcId,\n")
+    tree.replace(BASE_DC, "export const BASE_DC_ID = 2;\n",
+                 "// pluma: the Pluma server is datacenter 1.\n"
+                 "export const BASE_DC_ID = 1;\n")
     tree.sub(app, r"if\(App\.isMainDomain\) \{ // use Webogram credentials then\n(?:  App\.\w+ = '?[\w-]+'?;\n){3}\}\n\n", "")
 
     # Sign-in warms up connections to datacenters 2-5 for Telegram; the
@@ -1686,29 +1740,6 @@ def patch(tree, c):
     # pluma.chat links instead of t.me ones.
     link_host(tree)
 
-    sticker_set_toggle(tree)
-
-
-STICKERS = "src/lib/appManagers/appStickersManager.ts"
-
-
-def sticker_set_toggle(tree):
-    """Adding a set opened by its link (t.me/addstickers/<name>) does
-    nothing: the popup caches the set under its short name, and
-    toggleStickerSet looks it up under its id only, finds nothing and throws
-    before it asks the server. Telegram's own Web K reads the set it was
-    given instead since (toggleStickerSet over getCachedStickerSets, seen in
-    web.telegram.org/k on 2026-11-02). The patch loads the set by its id
-    first, which caches it there, as an installed or featured set is."""
-    tree.replace(STICKERS,
-                 "    const cacheKey = this.getCacheKey(input);\n"
-                 "    const stickerSet = this.storage.getFromCache(cacheKey);\n"
-                 "    set = stickerSet.set;\n",
-                 "    const cacheKey = this.getCacheKey(input);\n"
-                 "    // pluma: a set opened by its link is cached under its short name.\n"
-                 "    const stickerSet = this.storage.getFromCache(cacheKey) ?? await this.getStickerSet(input);\n"
-                 "    set = stickerSet.set;\n")
-
 
 def verify(tree, c):
     """Checks the result independently of how the edits were made."""
@@ -1731,9 +1762,11 @@ def verify(tree, c):
     if rsa.count("modulus: '") != 1 or f"modulus: '{c.modulus}'" not in rsa:
         raise PatchError("rsaKeysManager.ts: the server key is not the only one")
     app = sources["src/config/app.ts"]
-    for s in (f"  id: {c.api_id},\n", f"  hash: '{c.api_hash}',\n", "  baseDcId: 1 as TrueDcId,\n"):
+    for s in (f"  id: {c.api_id},\n", f"  hash: '{c.api_hash}',\n"):
         if s not in app:
             raise PatchError(f"app.ts: no {s.strip()!r}")
+    if "export const BASE_DC_ID = 1;\n" not in sources[BASE_DC]:
+        raise PatchError(f"{BASE_DC}: the base datacenter is not 1")
     if "{{url}}" in sources["index.html"] or "{{origin}}" in sources["index.html"]:
         raise PatchError("index.html: a canonical address is still there")
     for rel in ("public/site.webmanifest", "public/site_apple.webmanifest"):
@@ -1792,7 +1825,7 @@ def verify(tree, c):
         text = sources[rel]
         if "savedTagsAvailable()" not in text:
             raise PatchError(f"{rel}: no tag gate asks savedTagsAvailable")
-        gates = re.findall(r"if\(([^\n]*)\) \{\n\s*showPremiumPopup\(\{feature: 'saved_tags'\}\);", text)
+        gates = re.findall(r"if\(([^\n]*)\) \{\n\s*hotReloadGuard\.showPremiumPopup\(\{feature: 'saved_tags'\}\);", text)
         if text.count("feature: 'saved_tags'") != len(gates) + (rel == REACTIONS_MENU):
             raise PatchError(f"{rel}: a way to the Premium popup of tags the patch does not know")
         for condition in gates:
@@ -1823,6 +1856,12 @@ def verify(tree, c):
                              f"a link the client makes is {LINK_HOST}")
     if "exportedInvite.link.indexOf(" in sources[PROFILE]:
         raise PatchError(f"{PROFILE}: the invite link row cuts the link at t.me/")
+    for rel, text in sources.items():
+        if rel.startswith("src/"):
+            found = len(_TELEGRAM_SITE.findall(_COMMENT.sub("", text)))
+            if found != SITE_KEEP.get(rel, 0):
+                raise PatchError(f"{rel}: {found} telegram.org hosts, expected {SITE_KEEP.get(rel, 0)}; "
+                                 "does it lead the user to Telegram's services?")
 
 
 
