@@ -128,9 +128,19 @@ async function signIn(page, {signUp}) {
   });
 }
 
+// Opens the main menu and clicks one of its items. While the app is still
+// coming up a click on the menu button can leave no menu open.
+async function menuItem(page, name) {
+  const item = page.locator('.btn-menu-item', {hasText: name});
+  await expect(async() => {
+    await page.locator('.left-sidebar-burger').click();
+    await expect(item).toBeVisible({timeout: 2_000});
+  }).toPass({timeout: 30_000});
+  await item.click();
+}
+
 async function openSavedMessages(page) {
-  await page.locator('.left-sidebar-burger').click();
-  await page.locator('.btn-menu-item', {hasText: 'Saved Messages'}).click();
+  await menuItem(page, 'Saved Messages');
   await expect(page.locator('#column-center .chat-info .peer-title', {hasText: 'Saved Messages'}).first()).toBeVisible();
 }
 
@@ -149,8 +159,7 @@ function chatType(page, tab, name) {
 // of folders from help.getAppConfig: without them it refuses to create one
 // ("the limit of undefined folders").
 async function createFolder(page) {
-  await page.locator('.left-sidebar-burger').click();
-  await page.locator('.btn-menu-item', {hasText: 'Settings'}).click();
+  await menuItem(page, 'Settings');
   // A row takes the click on its ripple, which lies over the row's text.
   await page.locator('.row-clickable', {hasText: 'Chat Folders'}).click();
   const folders = sidebarTab(page, {has: page.getByRole('button', {name: 'Create Folder'})});
