@@ -907,6 +907,14 @@ class UpstreamTest(unittest.TestCase):
         self.assertNotIn("return showSendGiftPicker();", links)
         self.assertNotIn("return showSendGiftPopup(", links)
 
+    def test_no_way_to_an_emoji_status(self):
+        tree, _ = self.run_patch()
+        web_app = tree.read("src/components/webApp.tsx")
+        self.assertIn("if(true) { // pluma: the server does not serve account.updateEmojiStatus\n"
+                      "      telegramWebView.dispatchWebViewEvent('emoji_status_failed', {error: 'SERVER_ERROR'});\n", web_app)
+        self.assertNotIn("bot_can_manage_emoji_status) {", web_app)
+        self.assertNotIn("feature: 'emoji_status'", tree.read("src/lib/internalLinkProcessor.ts"))
+
     def test_premium_stickers(self):
         tree, _ = self.run_patch()
         self.assertIn("export default function premiumStickersAvailable() {\n  return true;\n}\n", tree.read(patch.PREMIUM_STICKERS))

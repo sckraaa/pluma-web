@@ -1915,6 +1915,27 @@ PREMIUM_FOR_EVERYONE_EDITS = (
     ("src/helpers/dom/createStickersContextMenu.ts",
      "    verify: () => !!(rootScope.premium && doc)\n",
      "    verify: () => false // pluma: the server does not serve account.updateEmojiStatus\n"),
+    # The remaining ways to an emoji status: a mini app, which asks the user
+    # and then calls the method, and a link, whose fallback is the Premium promo.
+    ("src/components/webApp.tsx",
+     "    if(!doc) {\n"
+     "      telegramWebView.dispatchWebViewEvent('emoji_status_failed', {error: 'SUGGESTED_EMOJI_INVALID'});\n",
+     "    if(true) { // pluma: the server does not serve account.updateEmojiStatus\n"
+     "      telegramWebView.dispatchWebViewEvent('emoji_status_failed', {error: 'SERVER_ERROR'});\n"),
+    ("src/components/webApp.tsx",
+     "    if(peer.pFlags.bot_can_manage_emoji_status) {\n"
+     "      telegramWebView.dispatchWebViewEvent('emoji_status_access_requested', {status: 'allowed'});\n",
+     "    if(true) { // pluma: the server does not serve bots.toggleUserEmojiStatusPermission\n"
+     "      telegramWebView.dispatchWebViewEvent('emoji_status_access_requested', {status: 'cancelled'});\n"),
+    ("src/lib/internalLinkProcessor.ts",
+     "    // no button means no premium \u2014 the same promo the control itself\n"
+     "    // shows when it is used without it (tdesktop: ShowPremiumPreviewBox).\n"
+     "    // Nothing to reach, so nothing is closed to reach it.\n"
+     "    if(!statusBtn) {\n"
+     "      return showPremiumPopup({feature: 'emoji_status'});\n",
+     "    // pluma: no button: the server does not serve account.updateEmojiStatus.\n"
+     "    if(!statusBtn) {\n"
+     "      return;\n"),
     # Gifts are sold for Stars, which do not exist here. tweb ignores the
     # stargifts_blocked of the app config, so its entries stay without an edit.
     ("src/components/chat/topbar.ts",
