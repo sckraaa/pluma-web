@@ -584,6 +584,25 @@ DAMAGE = (
     (PROFILE, "exportedInvite.link.indexOf('t.me/')", "exportedInvite.link.indexOf('/t.me/')"),
     ("src/components/popups/forward.tsx", "    copyTextToClipboard(url);\n", "    copyTextToClipboard(url || 'https://t.me/');\n"),
     ("src/helpers/getWebViewTgLink.ts", "return 'https://t.me/' + ", "return 'https://telegram.me/' && 'https://t.me/' + "),
+    # The screens of the login code: the anchors of the edits, what they rely
+    # on, and a link to the Telegram app or a string naming Telegram that the
+    # patch does not know.
+    (patch.LANG_SIGN, "'Login.Code.Resending': 'Requesting a new code...',", "'Login.Code.Resending': 'Requesting a new code…',"),
+    (patch.SENT_CODE, "  return sentCode.timeout || 0;\n}\n", "  return sentCode.timeout ?? 0;\n}\n"),
+    (patch.AUTH_CODE, "}, 'jolly_roger').then((animation) => {", "}, 'fragment').then((animation) => {"),
+    (patch.AUTH_CODE, "key = 'PhoneNumber.Code.Fragment.Info';", "key = 'PhoneNumber.Code.Fragment';"),
+    (patch.AUTH_CODE, "    const key = getResendLangKey(sentCode.next_type);\n",
+     "    const key = getResendLangKey(sentCode.next_type, sentCode.type);\n"),
+    (patch.AUTH_CODE, "          text=\"Login.Next\"\n", "          text=\"Login.Continue\"\n"),
+    ("src/lib/lottie/lottieLoader.ts", "  | 'UtyanSearch'\n", "  | 'UtyanSearch2'\n"),
+    ("src/pages/cards/SignInCard.tsx", "      const dcs = new Set([1, 2, 3, 4, 5]);\n",
+     "      const dcs = new Set([1, 2, 3, 4, 5]);\n      const privacy = 'tg://settings/phone_privacy';\n"),
+    (patch.LANG_SIGN, "  'Login.Code.Resending': 'Requesting a new code...',\n",
+     "  'Login.Code.Resending': 'Requesting a new code...',\n  'Pluma.Code.OpenTelegram': 'Open Telegram',\n"),
+    ("src/global.d.ts", "    | 'WIDGET_RESPONSE_TIMEOUT'\n", "    | 'WIDGET_RESPONSE_TIMEOUT_EXPIRED'\n"),
+    (patch.AUTH_CODE, "      resending = false;\n\n      return continueLogin(code, {\n",
+     "      resending = false;\n      return continueLogin(code, {\n"),
+    (patch.AUTH_CODE, "      console.error('auth.resendCode error:', err);\n", "      console.error('auth.resendCode', err);\n"),
 )
 
 
@@ -961,6 +980,84 @@ class UpstreamTest(unittest.TestCase):
         with self.assertRaisesRegex(patch.PatchError, patch.PREMIUM_STICKERS):
             patch.verify(tree, c)
         (self.root / patch.PREMIUM_STICKERS).write_text(text, encoding="utf-8")
+
+    def test_login_code_screens(self):
+        tree, _ = self.run_patch()
+        lang = tree.read(patch.LANG_SIGN)
+        # The real Telegram in Pluma's strings; the rest is renamed.
+        self.assertIn("  'Pluma.Code.SentTelegram': '**Check Telegram**\\nWe\\'ve sent the code for **%s** to your "
+                      "Telegram, in a message from the Pluma account.',\n", lang)
+        self.assertIn("  'Pluma.Code.NotDelivered': '**Code didn\\'t reach Telegram**\\nThe code for **%s** didn\\'t "
+                      "reach your Telegram. Let Telegram find you by your number: **Settings → Privacy and Security → "
+                      "Phone Number → Who can find me by my number? → Everybody**.\\n\\nNo Telegram? Ask the "
+                      "administrator for the code and enter it here.',\n", lang)
+        for line in ("  'Pluma.Code.OpenTelegram': 'Open Telegram',", "  'Pluma.Code.NotReceived': '[Didn\\'t get the code?]()',",
+                     "  'Pluma.Code.OpenTelegramSettings': 'Open Telegram settings',",
+                     "  'Pluma.Code.SendAgainIn': 'Send again in %s',", "  'Pluma.Code.SendAgain': '[Send again]()',",
+                     "  'Pluma.Code.Sending': 'Sending…',", "  'Pluma.Code.AskAdministrator': 'Ask the administrator',",
+                     "  'Pluma.Code.AskAdministratorText': 'Ask the Pluma administrator for your code and enter it here.',",
+                     "  'Login.Code.SentInApp': 'We have sent you a message in Pluma\\nwith the code.',",
+                     "  'Login.Title': 'Sign in to Pluma',"):
+            self.assertIn(line + "\n", lang)
+        card = tree.read(patch.AUTH_CODE)
+        self.assertIn("const TELEGRAM_CHAT_LINK = /^tg:\\/\\/resolve\\?domain=\\w+$/;\n", card)
+        self.assertIn("const TELEGRAM_PHONE_PRIVACY_LINK = 'tg://settings/phone_privacy';\n", card)
+        self.assertIn("        button = {url: TELEGRAM_PHONE_PRIVACY_LINK, text: 'Pluma.Code.OpenTelegramSettings'};\n", card)
+        self.assertIn("          button = {url: type.url, text: 'Pluma.Code.OpenTelegram'};\n", card)
+        self.assertIn("      }, 'UtyanSearch').then((animation) => {\n", card)
+        self.assertNotIn("jolly_roger", card)
+        # The errors of a resend: the expired code back to the number, the
+        # administrator's code with the row gone, a flood wait held back to its
+        # end; and no answer applied once the card has gone.
+        self.assertIn("    if(err.type === 'PHONE_CODE_EXPIRED') {\n"
+                      "      toastNew({langPackKey: 'PHONE_CODE_EXPIRED'});\n"
+                      "      navigate({name: 'signIn'});\n", card)
+        self.assertIn("      sentCode = {...sentCode, next_type: undefined};\n"
+                      "      persistSentCode();\n"
+                      "      updateResend();\n"
+                      "      showSimpleConfirmationPopup({\n"
+                      "        titleLangKey: 'Pluma.Code.AskAdministrator',\n"
+                      "        descriptionLangKey: 'Pluma.Code.AskAdministratorText',\n", card)
+        self.assertIn("      sentCode.resend_deadline = tsNow(true) + floodWait.waitTime;\n", card)
+        self.assertIn("      if(handlePlumaResendError(err)) {\n        return;\n      }\n\n"
+                      "      console.error('auth.resendCode error:', err);\n", card)
+        self.assertIn("      resending = false;\n"
+                      "      // pluma: an answer that comes after the card has gone is dropped, as its error is: applied, it\n"
+                      "      // would store the code card's state again and start a countdown that nothing stops\n"
+                      "      if(isGone()) {\n        return;\n      }\n\n"
+                      "      return continueLogin(code, {\n", card)
+        self.assertIn("    | 'SEND_CODE_UNAVAILABLE'\n", tree.read("src/global.d.ts"))
+        self.assertIn("export function getPlumaResendLangKeys(sentCode: SentCode)", tree.read(patch.SENT_CODE))
+
+    def test_login_code_screens_verify(self):
+        tree, c = self.run_patch()
+        # Each edit, undone.
+        for rel, old, new in patch.LOGIN_CODE_EDITS:
+            with self.subTest(rel=rel, new=new[:60]):
+                text = tree.read(rel)
+                (self.root / rel).write_text(text.replace(new, old), encoding="utf-8")
+                with self.assertRaisesRegex(patch.PatchError, rel):
+                    patch.verify(tree, c)
+                (self.root / rel).write_text(text, encoding="utf-8")
+        card = tree.read(patch.AUTH_CODE)
+        lang = tree.read(patch.LANG_SIGN)
+        for rel, text, damaged, error in (
+            # A Telegram app's link twice, and one more of them.
+            (patch.AUTH_CODE, card, card + "const again = 'tg://settings/phone_privacy';\n", "the Telegram app's link"),
+            (patch.AUTH_CODE, card, card + "const chat = 'tg://resolve?domain=';\n", "a tg: link"),
+            # Fragment's sticker back.
+            (patch.AUTH_CODE, card, card + "const sticker = 'jolly_roger';\n", "jolly_roger"),
+            # One of Pluma's strings twice, and another one naming Telegram.
+            (patch.LANG_SIGN, lang, lang.replace(patch.LOGIN_CODE_STRING_LINES[-1] + "\n",
+                                                 patch.LOGIN_CODE_STRING_LINES[-1] + "\n  'Pluma.Code.OpenTelegram': 'Open Telegram',\n"),
+             "Pluma.Code.OpenTelegram"),
+            (patch.LANG_SIGN, lang, lang.replace("'Open Telegram settings'", "'Open Telegram settings now'"), "still says Telegram"),
+        ):
+            with self.subTest(error=error):
+                (self.root / rel).write_text(damaged, encoding="utf-8")
+                with self.assertRaisesRegex(patch.PatchError, error):
+                    patch.verify(tree, c)
+                (self.root / rel).write_text(text, encoding="utf-8")
 
     def test_saved_tags_file_of_upstream(self):
         self.written.add(SAVED_TAGS)
