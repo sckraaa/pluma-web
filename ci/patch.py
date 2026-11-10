@@ -1788,6 +1788,10 @@ def patch(tree, c):
     # Pluma's name, icons, link scheme and colours.
     rebrand(tree, c)
 
+    # The screens of a code sent through Telegram; their strings name the
+    # real Telegram, so they come after the rename.
+    login_code_screens(tree)
+
     # pluma.chat links instead of t.me ones.
     link_host(tree)
 
@@ -1841,10 +1845,17 @@ def verify(tree, c):
     for rel, _, _ in STRINGS:
         for line in sources[rel].split("\n"):
             m = _STRING_ENTRY.match(line)
+            if rel == LANG_SIGN and line in LOGIN_CODE_STRING_LINES:
+                continue  # the real Telegram, where the login code went
             if m and _TELEGRAM_WORD.search(m.group(2)):
                 raise PatchError(f"{rel}: {m.group(2)[:60]!r} still says Telegram")
-    for rel, text in sources.items():
-        m = _TG_LINK.search(_COMMENT.sub("", text))
+    code = {rel: _COMMENT.sub("", text) for rel, text in sources.items()}
+    for rel, link in TELEGRAM_APP_LINKS:
+        if code[rel].count(link) != 1:
+            raise PatchError(f"{rel}: {code[rel].count(link)} occurrences of the Telegram app's link {link}, expected 1")
+        code[rel] = code[rel].replace(link, "")
+    for rel, text in code.items():
+        m = _TG_LINK.search(text)
         if m:
             raise PatchError(f"{rel}: a tg: link ({m.group()!r}); Pluma's links are plm://")
     if "'plm://login?token='" not in sources["src/pages/cards/SignQRCard.tsx"]:
@@ -1919,6 +1930,7 @@ def verify(tree, c):
                                  "does it lead the user to Telegram's services?")
 
     verify_help_section(sources)
+    verify_login_code_screens(sources)
 
 
 
@@ -2079,6 +2091,290 @@ def verify_premium_for_everyone(tree):
         text = tree.read(rel)
         if text.count(new) != 1 or old in text.replace(new, ""):
             raise PatchError(f"{rel}: the edit of task 071 is not there")
+
+
+# --- the screens of the login code ----------------------------------------------
+#
+# Task 076 (ADR 0044): the server sends the code to the person's other Pluma
+# session (auth.sentCodeTypeApp) or to their own Telegram, in a message from
+# Pluma's account there (auth.sentCodeTypeFragmentSms, its url the chat with
+# that account); a code that did not reach Telegram comes as
+# auth.sentCodeTypeSms, and the administrator issues it. Pluma sends no SMS: a
+# next_type of SMS is "Didn't get the code?" (App, FragmentSms) and "Send
+# again" after a countdown (Sms), both auth.resendCode on the same card, which
+# applies the new sentCode in place (AuthCodeCard.tsx applyNewSentCode). The
+# Fragment and SMS screens get Pluma's texts and the card's filled button
+# (wordSubmit) under the code: "Open Telegram" opens the chat, "Open Telegram
+# settings" the privacy setting that lets the account find the person by their
+# number (tg://settings/phone_privacy: Android LaunchActivity.java:2654, iOS
+# OpenUrl.swift:1025, tdesktop deep_links/deep_links_settings.cpp). A browser
+# cannot tell whether an app takes tg://, so the buttons always show (the first
+# one only with a chat to open). Fragment's sticker (jolly_roger) gives way to
+# the tracking monkey of the other codes; the screen of a code that did not
+# reach Telegram has Utya searching (UtyanSearch). With no next_type the row
+# is hidden, as upstream has it (updateResend).
+#
+# auth.resendCode can also fail in ways upstream's card takes for "An error
+# occurred" with the link offered again at once. PHONE_CODE_EXPIRED goes back
+# to the number, as the pencil does; SEND_CODE_UNAVAILABLE (no further try
+# through Telegram) is the administrator's code: an alert says so and the row
+# goes, as with no next_type; a flood wait is the card's own "Too many
+# attempts" line, and the countdown runs to its end before the link is back.
+# A resend answer that comes after the card has gone is dropped, as its error
+# already was: applied, it would store the code card's state again and start
+# a countdown nothing stops.
+
+AUTH_CODE = "src/pages/cards/AuthCodeCard.tsx"
+SENT_CODE = "src/pages/sentCode.ts"
+LANG_SIGN = "src/langSign.ts"
+
+# The English strings, as langSign.ts has them; other languages come from the
+# server's language pack. "Telegram" in them is the real Telegram: they are
+# added after the rename (rebrand), and verify knows them.
+LOGIN_CODE_STRINGS = (
+    ("Pluma.Code.SentTelegram",
+     "**Check Telegram**\\nWe\\'ve sent the code for **%s** to your Telegram, in a message from the Pluma account."),
+    ("Pluma.Code.OpenTelegram", "Open Telegram"),
+    ("Pluma.Code.NotReceived", "[Didn\\'t get the code?]()"),
+    ("Pluma.Code.NotDelivered",
+     "**Code didn\\'t reach Telegram**\\nThe code for **%s** didn\\'t reach your Telegram. Let Telegram find you by "
+     "your number: **Settings → Privacy and Security → Phone Number → Who can find me by my number? → Everybody**."
+     "\\n\\nNo Telegram? Ask the administrator for the code and enter it here."),
+    ("Pluma.Code.OpenTelegramSettings", "Open Telegram settings"),
+    ("Pluma.Code.SendAgainIn", "Send again in %s"),
+    ("Pluma.Code.SendAgain", "[Send again]()"),
+    ("Pluma.Code.Sending", "Sending…"),
+    ("Pluma.Code.AskAdministrator", "Ask the administrator"),
+    ("Pluma.Code.AskAdministratorText", "Ask the Pluma administrator for your code and enter it here."),
+)
+LOGIN_CODE_STRING_LINES = tuple(f"  '{key}': '{value}'," for key, value in LOGIN_CODE_STRINGS)
+
+# The links of the real Telegram app that the card gives to the system: the
+# only tg: links of the client (verify), each once.
+TELEGRAM_APP_LINKS = (
+    (AUTH_CODE, "/^tg:\\/\\/resolve\\?domain=\\w+$/"),
+    (AUTH_CODE, "'tg://settings/phone_privacy'"),
+)
+
+_RESENDING = "  'Login.Code.Resending': 'Requesting a new code...',\n"
+
+LOGIN_CODE_EDITS = (
+    (LANG_SIGN, _RESENDING, _RESENDING + "".join(line + "\n" for line in LOGIN_CODE_STRING_LINES)),
+    (SENT_CODE,
+     "  if(sentCode.next_type?._ === 'auth.codeTypeFragmentSms') return 0;\n"
+     "  return sentCode.timeout || 0;\n"
+     "}\n",
+     "  if(sentCode.next_type?._ === 'auth.codeTypeFragmentSms') return 0;\n"
+     "  return sentCode.timeout || 0;\n"
+     "}\n"
+     "\n"
+     "/**\n"
+     " * pluma: the resend row of the screens of a code sent through Telegram. Pluma sends no SMS: from a\n"
+     " * code in the app or in Telegram a next type of SMS is \"Didn't get the code?\", which leads to the\n"
+     " * screen of a code that did not reach Telegram (`auth.sentCodeTypeSms`), and there it is \"Send\n"
+     " * again\", another try through Telegram. Undefined where upstream's labels stay.\n"
+     " */\n"
+     "export function getPlumaResendLangKeys(sentCode: SentCode): PlumaResendLangKeys | undefined {\n"
+     "  if(sentCode.next_type?._ !== 'auth.codeTypeSms') return undefined;\n"
+     "  switch(sentCode.type._) {\n"
+     "    case 'auth.sentCodeTypeApp':\n"
+     "    case 'auth.sentCodeTypeFragmentSms':\n"
+     "      return {link: 'Pluma.Code.NotReceived', pending: 'Pluma.Code.SendAgainIn', sending: 'Pluma.Code.Sending'};\n"
+     "    case 'auth.sentCodeTypeSms':\n"
+     "      return {link: 'Pluma.Code.SendAgain', pending: 'Pluma.Code.SendAgainIn', sending: 'Pluma.Code.Sending'};\n"
+     "    default:\n"
+     "      return undefined;\n"
+     "  }\n"
+     "}\n"
+     "\n"
+     "/** pluma: the link once the countdown is over, the countdown, and the line while the request runs. */\n"
+     "export type PlumaResendLangKeys = {link: LangPackKey, pending: LangPackKey, sending: LangPackKey};\n"),
+    ("src/global.d.ts",
+     "    | 'PHONE_CODE_INVALID'\n    | 'WIDGET_RESPONSE_TIMEOUT'\n",
+     "    | 'PHONE_CODE_INVALID'\n"
+     "    // pluma: auth.resendCode when no other way to send the code is left\n"
+     "    | 'SEND_CODE_UNAVAILABLE'\n"
+     "    | 'WIDGET_RESPONSE_TIMEOUT'\n"),
+    (AUTH_CODE, "import simpleConfirmation from '@components/popups/simpleConfirmation';\n",
+     "import simpleConfirmation, {showSimpleConfirmationPopup} from '@components/popups/simpleConfirmation';\n"),
+    (AUTH_CODE, "  getCodeLength,\n  getResendLangKey,\n",
+     "  getCodeLength,\n  getPlumaResendLangKeys,\n  getResendLangKey,\n"),
+    (AUTH_CODE, "type Spec = Extract<CardSpec, {name: 'authCode'}>;\n",
+     "type Spec = Extract<CardSpec, {name: 'authCode'}>;\n"
+     "\n"
+     "// pluma: links of the real Telegram app, not Pluma's (plm://), that the screens of a code sent\n"
+     "// through Telegram give to the system: the chat with the account that wrote the code\n"
+     "// (`auth.sentCodeTypeFragmentSms.url`), and the privacy setting that lets the account find the person\n"
+     "// by their number (Android LaunchActivity, iOS OpenUrl, tdesktop deep_links_settings)\n"
+     f"const TELEGRAM_CHAT_LINK = {TELEGRAM_APP_LINKS[0][1]};\n"
+     f"const TELEGRAM_PHONE_PRIVACY_LINK = {TELEGRAM_APP_LINKS[1][1]};\n"
+     "\n"
+     "/**\n"
+     " * pluma: gives a link of the real Telegram app to the system, as tweb gives it a tg:// link it cannot\n"
+     " * open itself (confirmOpenUrl). A browser cannot tell whether an app takes the scheme, so the buttons\n"
+     " * are always there, and the text says where to go without them.\n"
+     " */\n"
+     "function openTelegramLink(url: string) {\n"
+     "  const a = document.createElement('a');\n"
+     "  a.href = url;\n"
+     "  a.click();\n"
+     "}\n"),
+    (AUTH_CODE, "  const [errorContent, setErrorContent] = createSignal<JSX.Element>();\n",
+     "  const [errorContent, setErrorContent] = createSignal<JSX.Element>();\n"
+     "  // pluma: the filled button of the screens of a code sent through Telegram\n"
+     "  const [telegramButton, setTelegramButton] = createSignal<{url: string, text: LangPackKey}>();\n"),
+    (AUTH_CODE,
+     "    if(sentCode.type._ === 'auth.sentCodeTypeFragmentSms') {\n",
+     "    // pluma: Utya searching on the screen of a code that did not reach Telegram; a code in\n"
+     "    // Telegram (Fragment's type) has the monkey of the other codes, not Fragment's sticker\n"
+     "    if(sentCode.type._ === 'auth.sentCodeTypeSms') {\n"),
+    (AUTH_CODE, "      }, 'jolly_roger').then((animation) => {\n", "      }, 'UtyanSearch').then((animation) => {\n"),
+    (AUTH_CODE,
+     "    const key = getResendLangKey(sentCode.next_type);\n",
+     "    // pluma: the labels of the screens of a code sent through Telegram\n"
+     "    const pluma = getPlumaResendLangKeys(sentCode);\n"
+     "    const key = pluma?.link ?? getResendLangKey(sentCode.next_type);\n"),
+    (AUTH_CODE,
+     "      setResendContent(i18n(getResendPendingLangKey(sentCode.next_type), [toHHMMSS(diff)]));\n",
+     "      setResendContent(i18n(pluma?.pending ?? getResendPendingLangKey(sentCode.next_type), [toHHMMSS(diff)]));\n"),
+    (AUTH_CODE,
+     "  function resendCode() {\n    if(resending) return;\n",
+     "  /**\n"
+     "   * pluma: the errors of a resend that are not a failure to report. An expired code goes back to the\n"
+     "   * number, as the pencil does; with no further try through Telegram the code is the administrator's,\n"
+     "   * and the row goes, as with no next type; a flood wait is the card's line for it, and the countdown\n"
+     "   * runs to its end before the link is offered again. Returns whether the error was one of them.\n"
+     "   */\n"
+     "  function handlePlumaResendError(err: ApiError) {\n"
+     "    if(err.type === 'PHONE_CODE_EXPIRED') {\n"
+     "      toastNew({langPackKey: 'PHONE_CODE_EXPIRED'});\n"
+     "      navigate({name: 'signIn'});\n"
+     "      return true;\n"
+     "    }\n"
+     "\n"
+     "    if(err.type === 'SEND_CODE_UNAVAILABLE') {\n"
+     "      sentCode = {...sentCode, next_type: undefined};\n"
+     "      persistSentCode();\n"
+     "      updateResend();\n"
+     "      showSimpleConfirmationPopup({\n"
+     "        titleLangKey: 'Pluma.Code.AskAdministrator',\n"
+     "        descriptionLangKey: 'Pluma.Code.AskAdministratorText',\n"
+     "        buttons: [{langKey: 'OK'}]\n"
+     "      });\n"
+     "      return true;\n"
+     "    }\n"
+     "\n"
+     "    const floodWait = getFloodWaitTime(err);\n"
+     "    if(floodWait.hasWaitTime) {\n"
+     "      sentCode.resend_deadline = tsNow(true) + floodWait.waitTime;\n"
+     "      persistSentCode();\n"
+     "      setErrorContent(i18n('Login.Code.TooManyAttempts', [wrapFormattedDuration(formatDuration(floodWait.waitTime))]));\n"
+     "      updateResend();\n"
+     "      return true;\n"
+     "    }\n"
+     "\n"
+     "    return false;\n"
+     "  }\n"
+     "\n"
+     "  function resendCode() {\n    if(resending) return;\n"),
+    (AUTH_CODE,
+     "      resending = false;\n\n      return continueLogin(code, {\n",
+     "      resending = false;\n"
+     "      // pluma: an answer that comes after the card has gone is dropped, as its error is: applied, it\n"
+     "      // would store the code card's state again and start a countdown that nothing stops\n"
+     "      if(isGone()) {\n"
+     "        return;\n"
+     "      }\n"
+     "\n"
+     "      return continueLogin(code, {\n"),
+    (AUTH_CODE,
+     "      console.error('auth.resendCode error:', err);\n",
+     "      if(handlePlumaResendError(err)) {\n"
+     "        return;\n"
+     "      }\n"
+     "\n"
+     "      console.error('auth.resendCode error:', err);\n"),
+    (AUTH_CODE,
+     "    setResendContent(i18n('Login.Code.Resending'));\n",
+     "    setResendContent(i18n(getPlumaResendLangKeys(sentCode)?.sending ?? 'Login.Code.Resending')); // pluma\n"),
+    (AUTH_CODE, "    let args: any[] | undefined;\n",
+     "    let args: any[] | undefined;\n"
+     "    let button: {url: string, text: LangPackKey} | undefined; // pluma\n"),
+    (AUTH_CODE,
+     "      case 'auth.sentCodeTypeSms':\n"
+     "      // the web client cannot attest with Play Integrity / SafetyNet, so a\n",
+     "      // pluma: Pluma sends no SMS: a code that did not reach the person's Telegram, which the\n"
+     "      // administrator issues, and the way to let Telegram find them by their number\n"
+     "      case 'auth.sentCodeTypeSms':\n"
+     "        key = 'Pluma.Code.NotDelivered';\n"
+     "        args = [wrapLeftToRight(sentCode.phone_number)];\n"
+     "        button = {url: TELEGRAM_PHONE_PRIVACY_LINK, text: 'Pluma.Code.OpenTelegramSettings'};\n"
+     "        break;\n"
+     "      // the web client cannot attest with Play Integrity / SafetyNet, so a\n"),
+    (AUTH_CODE,
+     "      case 'auth.sentCodeTypeFragmentSms': {\n"
+     "        key = 'PhoneNumber.Code.Fragment.Info';\n"
+     "        const a = document.createElement('a');\n"
+     "        setBlankToAnchor(a);\n"
+     "        a.href = type.url;\n"
+     "        args = [a];\n"
+     "        break;\n"
+     "      }\n",
+     "      // pluma: Pluma has no Fragment numbers: a code sent to the person's Telegram, in a message from\n"
+     "      // the account whose chat url opens (none when the server does not know it)\n"
+     "      case 'auth.sentCodeTypeFragmentSms':\n"
+     "        key = 'Pluma.Code.SentTelegram';\n"
+     "        args = [wrapLeftToRight(sentCode.phone_number)];\n"
+     "        if(TELEGRAM_CHAT_LINK.test(type.url)) {\n"
+     "          button = {url: type.url, text: 'Pluma.Code.OpenTelegram'};\n"
+     "        }\n"
+     "        break;\n"),
+    (AUTH_CODE, "    setSentTypeContent(i18n(key, args));\n",
+     "    setSentTypeContent(i18n(key, args));\n"
+     "    setTelegramButton(button); // pluma\n"),
+    (AUTH_CODE,
+     "          text=\"Login.Next\"\n"
+     "        />\n"
+     "      </Show>\n",
+     "          text=\"Login.Next\"\n"
+     "        />\n"
+     "      </Show>\n"
+     "      {/* pluma: the filled button of the screens of a code sent through Telegram */}\n"
+     "      <Show when={telegramButton()} keyed>\n"
+     "        {(button) => (\n"
+     "          <Button\n"
+     "            class={classNames('btn-primary btn-color-primary', styles.wordSubmit)}\n"
+     "            onClick={() => openTelegramLink(button.url)}\n"
+     "            text={button.text}\n"
+     "          />\n"
+     "        )}\n"
+     "      </Show>\n"),
+)
+
+
+def login_code_screens(tree):
+    # What the edits rely on: the sticker of the screen of a code that did
+    # not reach Telegram, and the one use of setBlankToAnchor (and its
+    # import, which goes with it).
+    tree.expect("src/lib/lottie/lottieLoader.ts", "  | 'UtyanSearch'\n")
+    tree.expect(AUTH_CODE, "setBlankToAnchor", 3)
+    for rel, old, new in LOGIN_CODE_EDITS:
+        tree.replace(rel, old, new)
+    tree.replace(AUTH_CODE, "import setBlankToAnchor from '@lib/richTextProcessor/setBlankToAnchor';\n", "")
+
+
+def verify_login_code_screens(sources):
+    for rel, old, new in LOGIN_CODE_EDITS:
+        text = sources[rel]
+        if text.count(new) != 1 or old in text.replace(new, ""):
+            raise PatchError(f"{rel}: the edit of task 076 is not there")
+    for line in LOGIN_CODE_STRING_LINES:
+        if sources[LANG_SIGN].split("\n").count(line) != 1:
+            raise PatchError(f"{LANG_SIGN}: {line.strip()[:60]!r} is not there once")
+    for s in ("'jolly_roger'", "'PhoneNumber.Code.Fragment.Info'", "setBlankToAnchor"):
+        if s in sources[AUTH_CODE]:
+            raise PatchError(f"{AUTH_CODE}: {s} is still there; a code in Telegram is no Fragment code")
+
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
