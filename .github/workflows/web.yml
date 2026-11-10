@@ -3,7 +3,8 @@
 #
 #   check  the patch script's tests, on the pinned upstream too (the patch
 #          applies, and damage to any of its places stops it), and the shell
-#          scripts' lint;
+#          scripts' lint, next to the build, which does not wait for them;
+#          the image does;
 #   build  fetch, patch, typecheck and bundle (the pnpm store in the GitHub
 #          Actions cache), check the bundle for traces of Telegram's servers,
 #          and the archive of the site with its SHA-256;
@@ -50,7 +51,6 @@ jobs:
         run: shellcheck -x ci/*.sh e2e/*.sh brand/*.sh
 
   build:
-    needs: check
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -112,7 +112,7 @@ jobs:
           if-no-files-found: error
 
   image:
-    needs: build
+    needs: [check, build]
     if: needs.build.outputs.target == 'server' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 15
