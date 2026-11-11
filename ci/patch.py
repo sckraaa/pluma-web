@@ -707,6 +707,58 @@ ON_PRIMARY = (
 )
 _WHITE_ON_PRIMARY = re.compile(r"(?<![\w-])((?:color|stroke): )(?:#fff|white|var\(--white\)|var\(--badge-text-color\))")
 
+# The verified badge (generateVerifiedIcon.ts) of verified users, bots,
+# groups and channels, wherever a name carries it: Telegram's rosette, a
+# symbol of index.html with the check cut out of it, over a square that
+# shows through as the check. The rosette is the theme's accent, as upstream
+# draws it, so it is sage in Pluma's themes; the check is what sits on an
+# accent fill (--on-primary-color): white as upstream has it on a dark
+# accent, dark on the dark theme's light sage. The selected chat and a
+# profile over its photo turn the rosette over and hide the check, as
+# upstream does (the selected chat's colours are changed with the rest of
+# that row). (file, upstream's, Pluma's)
+VERIFIED_BADGE = (
+    ("src/scss/base.scss",
+     ".verified-icon {\n  &-svg {\n    width: 1rem;\n    height: 1rem;\n  }\n\n"
+     "  &-check {\n    fill: #fff;\n  }\n\n"
+     "  &-background {\n    fill: var(--primary-color);\n  }\n}\n",
+     ".verified-icon {\n  &-svg {\n    width: 1rem;\n    height: 1rem;\n  }\n\n"
+     "  &-check {\n    fill: var(--on-primary-color); // pluma: what sits on the accent\n  }\n\n"
+     "  &-background {\n    fill: var(--primary-color);\n  }\n}\n"),
+    # The verification row of a profile draws the rosette in the grey of its
+    # text, no accent fill: the check stays white there, as upstream has it.
+    ("src/scss/partials/_profile.scss",
+     "    .verified-icon {\n      &-background {\n        fill: currentColor;\n      }\n    }\n",
+     "    .verified-icon {\n      &-background {\n        fill: currentColor;\n      }\n\n"
+     "      &-check {\n        fill: #fff; // pluma: a grey rosette, not the accent fill\n      }\n    }\n"),
+)
+# What these colours rely on: the badge's two layers, the square under the
+# rosette that shows through as the check, as upstream draws them.
+# (file, text)
+VERIFIED_BADGE_SHAPE = (
+    ("src/components/generateVerifiedIcon.ts",
+     "  use.setAttributeNS(null, 'href', '#verified-icon-background');\n"
+     "  use.classList.add('verified-icon-background');\n"),
+    ("src/components/generateVerifiedIcon.ts",
+     "  use2.setAttributeNS(null, 'href', '#verified-icon-check');\n"
+     "  use2.classList.add('verified-icon-check');\n"),
+    ("src/components/generateVerifiedIcon.ts", "  svg.append(use2, use);\n"),
+    ("index.html", '        <path id="verified-icon-check" d="M8 8H18V18H8V8Z" />\n'),
+)
+# A white check of the badge in a stylesheet: only the profile's grey one.
+_WHITE_CHECK = re.compile(r"&-check \{\n\s*fill: (?:#fff\b|#ffffff\b|white\b|var\(--white\))", re.IGNORECASE)
+
+
+def verify_verified_badge(sources):
+    for rel, _, new in VERIFIED_BADGE:
+        if sources[rel].count(new) != 1:
+            raise PatchError(f"{rel}: the verified badge is not in Pluma's colours")
+    for rel, text in sources.items():
+        found = len(_WHITE_CHECK.findall(text)) if rel.endswith(".scss") else 0
+        if found != (1 if rel == VERIFIED_BADGE[1][0] else 0):
+            raise PatchError(f"{rel}: {found} white checks of the verified badge; on the accent it is "
+                             "--on-primary-color")
+
 
 def mark_logo():
     """The sign-in page's logo, from brand/src/pluma-mark.svg: the ring in
@@ -1074,6 +1126,11 @@ def rebrand(tree, c):
                             ("rgba(255, 255, 255, .7)", "color-mix(in srgb, var(--on-primary-color) 70%, transparent)", 1),
                             ("rgba(255, 255, 255, .2)", "color-mix(in srgb, var(--on-primary-color) 20%, transparent)", 1),
                         ))
+    # The verified badge.
+    for rel, text in VERIFIED_BADGE_SHAPE:
+        tree.expect(rel, text)
+    for rel, old, new in VERIFIED_BADGE:
+        tree.replace(rel, old, new)
 
 
 # --- birthdays -----------------------------------------------------------------
@@ -1929,6 +1986,7 @@ def verify(tree, c):
                 raise PatchError(f"{rel}: {found} telegram.org hosts, expected {SITE_KEEP.get(rel, 0)}; "
                                  "does it lead the user to Telegram's services?")
 
+    verify_verified_badge(sources)
     verify_help_section(sources)
     verify_login_code_screens(sources)
 
