@@ -603,6 +603,12 @@ DAMAGE = (
     (patch.AUTH_CODE, "      resending = false;\n\n      return continueLogin(code, {\n",
      "      resending = false;\n      return continueLogin(code, {\n"),
     (patch.AUTH_CODE, "      console.error('auth.resendCode error:', err);\n", "      console.error('auth.resendCode', err);\n"),
+    # The verified badge: its colours and the drawing they rely on.
+    *((rel, old, old.replace("fill: ", "fill:  ", 1)) for rel, old, _ in patch.VERIFIED_BADGE),
+    *((rel, text, text.replace("verified-icon-", "verified-", 1)) for rel, text in patch.VERIFIED_BADGE_SHAPE[:2]),
+    ("src/components/generateVerifiedIcon.ts", "  svg.append(use2, use);\n", "  svg.append(use, use2);\n"),
+    ("index.html", '<path id="verified-icon-check" d="M8 8H18V18H8V8Z" />',
+     '<path id="verified-icon-check" d="M7 13l4 4 8-8" />'),
     # No AI message editor: each edit.
     *((rel, old, old.replace(": ", ":  ", 1) if ": " in old else old.replace(" = ", " =  ", 1))
       for rel, old, _ in patch.NO_AI_EDITOR_EDITS),
@@ -1061,6 +1067,36 @@ class UpstreamTest(unittest.TestCase):
                 with self.assertRaisesRegex(patch.PatchError, error):
                     patch.verify(tree, c)
                 (self.root / rel).write_text(text, encoding="utf-8")
+
+    def test_verified_badge(self):
+        tree, c = self.run_patch()
+        # The rosette is the accent, sage in Pluma's themes, and its check
+        # what sits on the accent; the profile's grey one keeps a white check.
+        base = tree.read(BASE)
+        self.assertIn("  &-check {\n    fill: var(--on-primary-color); // pluma: what sits on the accent\n  }\n\n"
+                      "  &-background {\n    fill: var(--primary-color);\n  }\n", base)
+        self.assertIn("      &-background {\n        fill: currentColor;\n      }\n\n"
+                      "      &-check {\n        fill: #fff; // pluma: a grey rosette, not the accent fill\n      }\n",
+                      tree.read("src/scss/partials/_profile.scss"))
+        # The selected chat turns the rosette over in what sits on the accent.
+        active = tree.read(CHATLIST).split("&.active {", 1)[1].split("\n      }\n", 1)[0]
+        self.assertIn("        .verified-icon {\n          &-background {\n"
+                      "            fill: var(--on-primary-color) !important;\n", active)
+        # Each edit undone, and a white check on the accent added elsewhere.
+        for rel, old, new in patch.VERIFIED_BADGE:
+            with self.subTest(rel=rel):
+                text = tree.read(rel)
+                (self.root / rel).write_text(text.replace(new, old), encoding="utf-8")
+                with self.assertRaisesRegex(patch.PatchError, pathlib.PurePath(rel).name):
+                    patch.verify(tree, c)
+                (self.root / rel).write_text(text, encoding="utf-8")
+        rel = "src/scss/partials/_chatBubble.scss"
+        text = tree.read(rel)
+        self.written.add(rel)
+        (self.root / rel).write_text(text + ".bubble .verified-icon {\n  &-check {\n    fill: white;\n  }\n}\n",
+                                     encoding="utf-8")
+        with self.assertRaisesRegex(patch.PatchError, "_chatBubble.scss: 1 white checks"):
+            patch.verify(tree, c)
 
     def test_saved_tags_file_of_upstream(self):
         self.written.add(SAVED_TAGS)
