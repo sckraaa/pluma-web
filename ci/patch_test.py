@@ -603,6 +603,9 @@ DAMAGE = (
     (patch.AUTH_CODE, "      resending = false;\n\n      return continueLogin(code, {\n",
      "      resending = false;\n      return continueLogin(code, {\n"),
     (patch.AUTH_CODE, "      console.error('auth.resendCode error:', err);\n", "      console.error('auth.resendCode', err);\n"),
+    # No AI message editor: each edit.
+    *((rel, old, old.replace(": ", ":  ", 1) if ": " in old else old.replace(" = ", " =  ", 1))
+      for rel, old, _ in patch.NO_AI_EDITOR_EDITS),
 )
 
 
@@ -1217,6 +1220,91 @@ class PremiumForEveryoneTest(unittest.TestCase):
                     patch.verify_premium_for_everyone(tree)
                 tree.write(rel, patched)
             patch.verify_premium_for_everyone(tree)
+
+
+class NoAiEditorTest(unittest.TestCase):
+    # The upstream files, made of the texts the edits expect, with the
+    # context's maker and the button's makers where upstream has them.
+    def tree(self, root, edits=patch.NO_AI_EDITOR_EDITS):
+        (root / "src/lib/mtproto").mkdir(parents=True, exist_ok=True)
+        (root / "src/lib/mtproto/dcConfigurator.ts").write_text("")
+        files = {patch.AI_CHAT_INPUT: "  public getAiEditorContext() {return createAiEditorContext(this);}\n",
+                 "src/components/chat/inputState/createAiEditorContext.ts":
+                     "export default function createAiEditorContext(input: ChatInput) {}\n"}
+        for rel in patch.AI_BUTTON_USES:
+            files[rel] = "<AiEditorButton />\n" if rel.endswith("inputFieldMessage.tsx") else "useAiEditorButton({});\n"
+        for rel, old, _ in edits:
+            files[rel] = files.get(rel, "") + old + "x\n"
+        for rel, text in files.items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text, encoding="utf-8")
+        return patch.Tree(root)
+
+    def sources(self, tree):
+        return {rel: tree.read(rel) for rel in tree.sources()}
+
+    def test_applies(self):
+        with tempfile.TemporaryDirectory() as d:
+            tree = self.tree(pathlib.Path(d))
+            with self.assertRaisesRegex(patch.PatchError, "the AI editor is offered again"):
+                patch.verify_no_ai_editor(self.sources(tree))
+            patch.no_ai_editor(tree)
+            patch.verify_no_ai_editor(self.sources(tree))
+            with self.assertRaises(patch.PatchError):
+                patch.no_ai_editor(tree)
+
+    def test_no_field_gets_the_context(self):
+        with tempfile.TemporaryDirectory() as d:
+            tree = self.tree(pathlib.Path(d))
+            patch.no_ai_editor(tree)
+            self.assertNotIn(".getAiEditorContext(", tree.read(patch.AI_CHAT_INPUT))
+            self.assertNotIn("getAiEditorContext", tree.read(patch.AI_NEW_MEDIA))
+            self.assertIn("const aiAvailable = false;", tree.read(patch.AI_MARKUP_TOOLTIP))
+
+    def test_upstream_changed(self):
+        for i, edit in enumerate(patch.NO_AI_EDITOR_EDITS):
+            changed = edit[1][:-2] + "~" + edit[1][-1]
+            edits = [e if j != i else (edit[0], changed) + tuple(edit[2:]) for j, e in enumerate(patch.NO_AI_EDITOR_EDITS)]
+            with self.subTest(edit=i), tempfile.TemporaryDirectory() as d:
+                tree = self.tree(pathlib.Path(d), edits)
+                with self.assertRaisesRegex(patch.PatchError, "occurrences"):
+                    patch.no_ai_editor(tree)
+
+    def test_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            tree = self.tree(pathlib.Path(d))
+            patch.no_ai_editor(tree)
+            for i, (rel, old, new) in enumerate(patch.NO_AI_EDITOR_EDITS):
+                patched = tree.read(rel)
+                tree.write(rel, patched.replace(new, old))
+                with self.subTest(edit=i), self.assertRaisesRegex(patch.PatchError, "the AI editor is offered again"):
+                    patch.verify_no_ai_editor(self.sources(tree))
+                tree.write(rel, patched)
+            patch.verify_no_ai_editor(self.sources(tree))
+
+    def test_another_way_in(self):
+        # A field handed the context, or a button made somewhere else; a
+        # mention in a comment is not one.
+        cases = (
+            ("src/components/stories/input.ts", "      ai: chat.input.getAiEditorContext(),\n", "uses of the AI editor's context"),
+            ("src/components/popups/other.tsx", "const ai = createAiEditorContext(input);\n", "uses of the AI editor's context"),
+            ("src/components/popups/other.tsx", "<AiEditorButton context={ai} />\n", "AI editor buttons"),
+            (patch.AI_NEW_MEDIA, "useAiEditorButton({});\n", "AI editor buttons"),
+        )
+        for rel, added, message in cases:
+            with self.subTest(file=rel, added=added), tempfile.TemporaryDirectory() as d:
+                tree = self.tree(pathlib.Path(d))
+                patch.no_ai_editor(tree)
+                path = pathlib.Path(d) / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                tree.write(rel, (tree.read(rel) if path.exists() else "") + added)
+                with self.assertRaisesRegex(patch.PatchError, message):
+                    patch.verify_no_ai_editor(self.sources(tree))
+        with tempfile.TemporaryDirectory() as d:
+            tree = self.tree(pathlib.Path(d))
+            patch.no_ai_editor(tree)
+            tree.write(patch.AI_NEW_MEDIA, tree.read(patch.AI_NEW_MEDIA) + "// ai: chat.input.getAiEditorContext()\n")
+            patch.verify_no_ai_editor(self.sources(tree))
 
 
 if __name__ == "__main__":
