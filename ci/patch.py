@@ -1837,6 +1837,7 @@ def patch(tree, c):
     # Premium stickers for every user.
     premium_stickers(tree)
     premium_for_everyone(tree)
+    no_ai_editor(tree)
 
     # Telegram's site off the screens a user reaches.
     for rel, old, new in TELEGRAM_SITE_EDITS:
@@ -1961,6 +1962,7 @@ def verify(tree, c):
 
     verify_premium_stickers(tree, sources)
     verify_premium_for_everyone(tree)
+    verify_no_ai_editor(sources)
 
     # Links: pluma.chat is a link host of the app, its exact host only, and
     # no Telegram link host is left but the ones LINK_KEEP knows.
@@ -2149,6 +2151,63 @@ def verify_premium_for_everyone(tree):
         text = tree.read(rel)
         if text.count(new) != 1 or old in text.replace(new, ""):
             raise PatchError(f"{rel}: the edit of task 071 is not there")
+
+
+# --- No AI message editor (task 079) ------------------------------------------
+# The AI editor rewrites, proofreads, restyles and translates a typed message
+# (aiEditorPopup, createWithAiPopup: messages.composeMessageWithAI,
+# messages.composeRichMessageWithAI and the aicompose.* tones); Pluma runs no
+# language model to answer them (the owner's decision, 2026-11-11). Its
+# button exists only where a field is given the chat's AI editor context:
+# the chat's message field (RichMessageInput, whose toolbar AI button clicks
+# that button) and the caption of the media popup (InputFieldMessage). Neither
+# is given it now, so no button is made; the AI button of the formatting
+# tooltip, which clicks the same button, is hidden.
+AI_CHAT_INPUT = "src/components/chat/input.ts"
+AI_NEW_MEDIA = "src/components/popups/newMedia.tsx"
+AI_MARKUP_TOOLTIP = "src/components/chat/markupTooltip.ts"
+NO_AI_EDITOR_EDITS = (
+    (AI_CHAT_INPUT,
+     "      ai: this.getAiEditorContext(),\n",
+     "      // pluma: no AI editor, Pluma runs no language model (task 079).\n"),
+    (AI_NEW_MEDIA,
+     "        sendOnShortcut: true,\n        ai: chat.input.getAiEditorContext()\n      });\n",
+     "        sendOnShortcut: true\n        // pluma: no AI editor, Pluma runs no language model (task 079).\n      });\n"),
+    (AI_MARKUP_TOOLTIP,
+     "    const aiAvailable = this.input.classList.contains('input-message-input');\n",
+     "    const aiAvailable = false; // pluma: no AI editor, Pluma runs no language model (task 079)\n"),
+)
+# The editor's context is made by createAiEditorContext() for
+# getAiEditorContext() alone, which nothing calls now; its button is made
+# only by useAiEditorButton, for the two fields that get no context. Upstream
+# adding a caller of either stops the patch until it is read.
+_AI_CONTEXT_CALL = re.compile(r"\.getAiEditorContext\(|\bcreateAiEditorContext\(")
+_AI_BUTTON_USE = re.compile(r"\buseAiEditorButton\(|<AiEditorButton\b")
+AI_CONTEXT_CALLS = {AI_CHAT_INPUT: 1, "src/components/chat/inputState/createAiEditorContext.ts": 1}
+AI_BUTTON_USES = {"src/components/richMessageInput/ai.tsx": 1, "src/components/richMessageInput/index.tsx": 1,
+                  "src/components/richMessageInput/aiButton.tsx": 1, "src/components/inputFieldMessage.tsx": 1}
+
+
+def no_ai_editor(tree):
+    for rel, old, new in NO_AI_EDITOR_EDITS:
+        tree.replace(rel, old, new)
+
+
+def verify_no_ai_editor(sources):
+    for rel, old, new in NO_AI_EDITOR_EDITS:
+        text = sources[rel]
+        if text.count(new) != 1 or old in text.replace(new, ""):
+            raise PatchError(f"{rel}: the AI editor is offered again")
+    for rel, text in sources.items():
+        code = _COMMENT.sub("", text)
+        found = len(_AI_CONTEXT_CALL.findall(code))
+        if found != AI_CONTEXT_CALLS.get(rel, 0):
+            raise PatchError(f"{rel}: {found} uses of the AI editor's context, expected {AI_CONTEXT_CALLS.get(rel, 0)}; "
+                             "another way into the AI editor")
+        found = len(_AI_BUTTON_USE.findall(code))
+        if found != AI_BUTTON_USES.get(rel, 0):
+            raise PatchError(f"{rel}: {found} AI editor buttons, expected {AI_BUTTON_USES.get(rel, 0)}; "
+                             "another way into the AI editor")
 
 
 # --- the screens of the login code ----------------------------------------------
