@@ -643,6 +643,8 @@ DAMAGE = (
     # End-to-end group calls: each edit, and what the edits rely on.
     *((rel, old, damaged(old)) for rel, old, _ in patch.E2E_GROUP_CALL_EDITS),
     *((rel, text, damaged(text)) for rel, text, _ in patch.E2E_GROUP_CALL_RELIES_ON),
+    # The colours of calls.
+    *((rel, old, damaged(old)) for rel, old, _ in patch.CALL_COLOR_EDITS),
 )
 
 
@@ -1180,14 +1182,68 @@ class UpstreamTest(unittest.TestCase):
         self.assertNotIn("openRtmpCallViewer", im)
         # Leaving a chat's call for another names the chat's video chat.
         self.assertIn("    const fromType = currentCall.isConference ? 'Conference' : 'Voice';\n", im)
-        # The report goes over the main connection's data channel, made of the worker's counters.
-        self.assertIn("this.sendDataChannelData({colibriClass: 'PlumaE2EStatus', ...report});",
-                      tree.read(patch.GROUP_CALL_CONNECTION))
+        # No recording to start or stop: the RTMP player's menu had the only entries.
+        rtmp = tree.read(patch.RTMP_VIEWER)
+        self.assertNotIn("Rtmp.MediaViewer.Menu.StartRecording", rtmp)
+        self.assertNotIn("Rtmp.MediaViewer.Menu.StopRecording", rtmp)
+        self.assertNotIn("showRtmpRecordPopup", rtmp)
+        self.assertIn("            text: 'Rtmp.MediaViewer.Menu.StreamSettings',\n", rtmp)
+
+        # The report, PlumaE2EStatus v1: over the main connection's data channel while it is open, every 5 s by
+        # its own timer (none at once), numbered from 1 on each connection, exactly the fields of v1.
+        connection = tree.read(patch.GROUP_CALL_CONNECTION)
+        self.assertNotIn("sendDataChannelData({colibriClass: 'PlumaE2EStatus'", connection)
+        self.assertIn("        this.dataChannel.send(serializeE2eStatusReport(++this.e2eStatusReportSeq, report));\n",
+                      connection)
+        self.assertIn("    }, E2E_STATUS_REPORT_INTERVAL_MS);\n  }\n", connection)
+        self.assertNotIn("    send();\n", connection)
+        self.assertIn("const E2E_STATUS_REPORT_INTERVAL_MS = 5000;\nconst E2E_STATUS_REPORT_MAX_LENGTH = 16384;\n",
+                      connection)
+        body = connection[connection.index("    const json = JSON.stringify({\n"):]
+        body = body[:body.index("    });\n")]
+        self.assertEqual(re.findall(r"^      (\w+)", body, re.M),
+                         ["colibriClass", "v", "seq", "height", "lastBlock", "offset0", "offset1", "error",
+                          "sendEpochs", "decryptEpochs", "unknownEpochs", "encrypted", "encryptFailed", "senders"])
+        self.assertIn("      colibriClass: 'PlumaE2EStatus',\n      v: 1,\n", body)
+        self.assertIn("    return {user, ok, unknownEpoch, tooOld, duplicate, failed, lastOkMs};\n", connection)
+        instance = tree.read(patch.GROUP_CALL)
+        self.assertIn("    return {...report, offset0: this.e2eChainOffsets[0], offset1: this.e2eChainOffsets[1]};\n",
+                      instance)
+        # The worker's counters are since the last report, which takes them; the epoch lists too.
         worker = tree.read(patch.E2E_WORKER)
-        self.assertIn("    case 'getE2eReport':\n", worker)
+        self.assertIn("    case 'takeE2eReport':\n", worker)
+        self.assertNotIn("getE2eReport", worker)
+        self.assertIn("    counters.ok = counters.unknownEpoch = counters.tooOld = counters.duplicate = "
+                      "counters.failed = 0;\n", worker)
+        self.assertIn("  decryptEpochs.clear();\n  unknownEpochs.clear();\n  encryptedFrames = encryptFailedFrames = 0;\n"
+                      "  return report;\n", worker)
+        self.assertIn("const E2E_REPORT_MAX_EPOCHS = 15;\nconst E2E_REPORT_MAX_UNKNOWN_EPOCHS = 8;\n"
+                      "const E2E_REPORT_MAX_SENDERS = 100;\n", worker)
         self.assertIn("    countDecryptError(fromUserId, err, new Uint8Array(frame.data));", worker)
+        self.assertIn("    countEncrypted(encrypted); // pluma: for the status report, before the frame takes the bytes\n"
+                      "    frame.data = toFrameData(encrypted);\n", worker)
+        self.assertIn("    countDecrypted(fromUserId, encrypted); // pluma: for the status report\n"
+                      "    frame.data = toFrameData(decrypted);\n", worker)
         # A frame naming an epoch of ours whose key fails is no unknown epoch (tde2e Call::decrypt).
-        self.assertIn("    if(named.some((prefix) => own.has(prefix))) {\n      ++counters.otherErrors;\n", worker)
+        self.assertIn("    if(!named.some((prefix) => own.has(prefix))) {\n      ++counters.unknownEpoch;\n", worker)
+        for field in ("alreadyProcessed", "otherErrors", "encryptErrors", "broadcastOffset", "lastBlockHash: string",
+                      "failure: number", "epochs: number[]", "decrypted: number"):
+            with self.subTest(old_field=field):
+                self.assertNotIn(field, worker + tree.read(patch.E2E_PROTOCOL) + connection)
+
+        # Self-healing: a tde2e failure of a joined call rejoins, it does not leave; the chain behind and nothing
+        # decrypted rejoin too; the controller waits 0, 2, 5 s and leaves at the fourth in 5 minutes.
+        self.assertIn("        this.requestConferenceRecovery('e2e-failure');\n        return;\n", instance)
+        self.assertNotIn("callFailed — leaving", instance)
+        self.assertIn("        this.requestConferenceRecovery('chain-behind');\n", instance)
+        self.assertIn("        this.requestConferenceRecovery('decrypt-stalled');\n", instance)
+        self.assertIn("const E2E_CHAIN_BEHIND_MS = 12000;\n", instance)
+        self.assertIn("const E2E_DECRYPT_STALL_MS = 15000;\n", worker)
+        self.assertIn("const E2E_REJOINS_LIMIT = 3;\nconst E2E_REJOINS_PERIOD_MS = 5 * 60 * 1000;\n"
+                      "const E2E_REJOIN_DELAYS_MS = [0, 2000, 5000];\nconst E2E_REJOIN_JITTER_MS = 1000;\n", calls)
+        self.assertIn("          toastNew({langPackKey: 'PlumaCall.EncryptionFailed'});\n", calls)
+        self.assertIn("  'PlumaCall.EncryptionFailed': 'The encryption of this call keeps failing, so you left it. "
+                      "Join it again.',\n", tree.read("src/lang.ts"))
 
         sources = {rel: tree.read(rel) for rel in tree.sources()}
         patch.verify_e2e_group_calls(sources)
@@ -1199,7 +1255,22 @@ class UpstreamTest(unittest.TestCase):
             (patch.GROUP_CALL_POPUP, "      if(instance.isConference) return {", "      if(instance.e2e) return {",
              "index.tsx: the edit of task 094 is not there"),
             (patch.LIVE_STREAM_SUPPORT, "= false;", "= true;", "liveStreamSupport.ts: the edit of task 094 is not there"),
-            (patch.E2E_WORKER, "    ++counters.decrypted;\n", "", "encrypt.worker.ts: the edit of task 094 is not there"),
+            (patch.E2E_WORKER, "    countDecrypted(fromUserId, encrypted); // pluma: for the status report\n", "",
+             "encrypt.worker.ts: the edit of task 094 is not there"),
+            (patch.GROUP_CALL, "        this.requestConferenceRecovery('e2e-failure');\n",
+             "        this.hangUpAfterFatalFailure();\n", "groupCallInstance.ts: the edit of task 094 is not there"),
+            (patch.GROUP_CALL, "\n", "\nvoid this.requestConferenceRecovery('epoch-skew');\n",
+             "groupCallInstance.ts: rejoins for ['epoch-skew'], which the self-healing has not sorted"),
+            (patch.GROUP_CALL, "requestConferenceRecovery('sync-unrecoverable-locally')",
+             "requestConferenceRecovery('sync-forbidden')",
+             "rejoins for ['sync-forbidden', 'sync-unrecoverable-locally'], which the self-healing has not sorted"),
+            (patch.RTMP_VIEWER, "\n", "\nvoid showRtmpRecordPopup();\n",
+             "rtmp.ts: 1 ways to record a call, expected 0"),
+            ("src/components/groupCall/index.tsx", "\n",
+             "\nvoid instance.managers.appGroupCallsManager.startRecording(input, {});\n",
+             "index.tsx: 1 ways to record a call, expected 0"),
+            ("src/components/groupCall/index.tsx", "\n", "\nconst text = 'Rtmp.MediaViewer.Menu.StartRecording';\n",
+             "index.tsx: 1 recording entries, expected 0"),
             ("src/components/groupCall/videoGrid.ts", "\n", "\nconst isConference = (instance: GroupCallInstance) => !!instance.e2e;\n",
              "videoGrid.ts: 1 reads of a call's e2e worker, expected 0"),
             (patch.IM_MANAGER, "\n", "\nconst isConference = (call: GroupCallInstance) => !!call?.e2e;\n",
@@ -1221,6 +1292,65 @@ class UpstreamTest(unittest.TestCase):
                     patch.verify_e2e_group_calls(changed)
         rel = "src/components/chat/topbar.ts"
         patch.verify_e2e_group_calls(dict(sources, **{rel: sources[rel] + "// openRtmpCallViewer(peerId) is gone\n"}))
+
+    def test_call_colors(self):
+        tree, c = self.run_patch()
+        # The 1:1 call's backgrounds: the owner's three sets, the points in Telegram's order.
+        self.assertIn("const GRADIENT_COLORS = {\n"
+                      "  connecting: '3a4a3c,4f6e52,2c3a2d,5b7a5e',\n"
+                      "  active:     '5b7a5e,6f8f72,4f6e52,7fa082',\n"
+                      "  weak:       '8a5a44,a86b4c,7a4e3b,b97a55'\n"
+                      "};\n", tree.read(patch.CALL_COLORS))
+        # The group call's colours, which its screen, its lottie icons, the avatars' and the microphone's waves read.
+        base = tree.read("src/scss/base.scss")
+        for line in ("  --gc-button-leave-color: rgba(122, 78, 59, .92);\n", "  --gc-green-text-color: #9DBB9F;\n",
+                     "  --gc-blue-text-color: #7FA082;\n", "  --gc-red-text-color: #B97A55;\n",
+                     "  --gc-microphone-unmuted-from: #5B7A5E;\n", "  --gc-microphone-hand-to: #2C3A2D;\n"):
+            with self.subTest(line=line):
+                self.assertIn(line, base)
+        # The plate over a chat.
+        plate = tree.read(patch.CALL_PLATE)
+        self.assertIn("  &.is-unmuted .topbar-call-center {\n    --pc-c1: #5B7A5E;\n", plate)
+        self.assertIn("  &.is-muted-by-admin .topbar-call-center {\n    --pc-c1: #8A5A44;\n", plate)
+        # Every colour of a call is one of the palette's: what the edits put is sage, the call's other colours
+        # (white, black, greys, the theme's own) are no colour of Telegram's calls.
+        sage = {"3a4a3c", "4f6e52", "2c3a2d", "5b7a5e", "6f8f72", "7fa082", "8a5a44", "a86b4c", "7a4e3b", "b97a55",
+                "9dbb9f"}
+        neutral = {"aaaaaa"}  # the secondary text, a grey of the group call that stays
+        for rel, _, new in patch.CALL_COLOR_EDITS:
+            for color in re.findall(r"#([0-9A-Fa-f]{6})\b|'([0-9a-f]{6}(?:,[0-9a-f]{6})*)'", new):
+                for hex6 in ",".join(filter(None, color)).split(","):
+                    with self.subTest(rel=rel, color=hex6):
+                        self.assertIn(hex6.lower(), sage | neutral)
+
+        sources = {rel: tree.read(rel) for rel in tree.sources()}
+        patch.verify_call_colors(sources)
+        # Telegram's call colours anywhere they could come back stop the check: a colour only calls have, in any
+        # file; one calls share with something else, in a call's file or among the --gc-* colours; an undone edit.
+        for rel, old, new, error in (
+            (patch.CALL_COLORS, "3a4a3c,4f6e52,2c3a2d,5b7a5e", "568fd6,626ed5,a667d5,7664da",
+             "index.tsx: the call is not in the sage palette"),
+            ("src/components/groupCall/videoTile.ts", "\n", "\nconst speaking = '#00CB47';\n",
+             "videoTile.ts: Telegram's call colour '00CB47' is still there"),
+            ("src/scss/partials/popups/_groupCall.scss", "\n", "\n.x { color: rgba(27, 66, 42, .5); }\n",
+             "_groupCall.scss: Telegram's call colour 'rgba(27, 66, 42,' is still there"),
+            ("src/components/call/settingsPopup.scss", "\n", "\n.x { color: #3390EC; }\n",
+             "settingsPopup.scss: Telegram's call colour '3390EC' is still there"),
+            ("src/scss/base.scss", "  --gc-tile-background: #2c2c2e;\n",
+             "  --gc-tile-background: #2c2c2e;\n  --gc-link-color: #3390ec;\n",
+             "base.scss: Telegram's call colour '3390ec' is still there"),
+            ("src/components/wallet/visual/card/background.ts", "\n", "\nconst glow = '#4EABF8';\n",
+             "background.ts: Telegram's call colour '4EABF8' is still there"),
+        ):
+            with self.subTest(error=error):
+                self.assertIn(old, sources[rel])
+                changed = dict(sources, **{rel: sources[rel].replace(old, new, 1)})
+                with self.assertRaisesRegex(patch.PatchError, re.escape(error)):
+                    patch.verify_call_colors(changed)
+        # A colour shared with the rest of the client stays where it means something else.
+        rel = "src/components/wallet/wallet.module.scss"
+        self.assertIn("3390ec", sources[rel].lower())
+        patch.verify_call_colors(sources)
 
     def test_transcription(self):
         tree, c = self.run_patch()
