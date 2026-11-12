@@ -4,6 +4,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tarfile
@@ -334,6 +335,14 @@ DC = "src/lib/mtproto/dcConfigurator.ts"
 RSA = "src/lib/mtproto/rsaKeysManager.ts"
 APP = "src/config/app.ts"
 
+
+
+def damaged(text):
+    """text with its first word misspelt: a place upstream changed."""
+    i = re.search(r"[A-Za-z]", text).start() + 1
+    return text[:i] + "_" + text[i:]
+
+
 # Damage to each place the patch edits or checks, as (file, text in the
 # pinned upstream, replacement): every one must stop the patch with an error
 # that names the file.
@@ -631,6 +640,9 @@ DAMAGE = (
     (BUBBLES, patch.VIEW_ONCE_MEDIA, patch.VIEW_ONCE_MEDIA.replace("MessageMedia.messageMediaPhoto)?.ttl_seconds",
                                                                  "MessageMedia.messageMediaPhoto)?.photo && false")),
     (BUBBLES, patch.VIEW_ONCE_SERVICE_LINE, "    if(isDrawnAsService(message) && !isSelfDestructingMedia) {\n"),
+    # End-to-end group calls: each edit, and what the edits rely on.
+    *((rel, old, damaged(old)) for rel, old, _ in patch.E2E_GROUP_CALL_EDITS),
+    *((rel, text, damaged(text)) for rel, text, _ in patch.E2E_GROUP_CALL_RELIES_ON),
 )
 
 
@@ -1142,6 +1154,73 @@ class UpstreamTest(unittest.TestCase):
         (self.root / PROFILE).write_text(tree.read(PROFILE) + "// 'SupportStatus' is the status of a support account\n",
                                          encoding="utf-8")
         patch.verify(tree, c)
+
+    def test_e2e_group_calls(self):
+        tree, c = self.run_patch()
+        # A chat's call is joined the end-to-end way, by its id and access hash, with its chat and its speaker
+        # invite, and as the account; the legacy join is left to nothing.
+        calls = tree.read(patch.GROUP_CALLS)
+        self.assertIn("    await this.joinConference({\n      input: groupCallToInput(groupCall),\n"
+                      "      selfUserId: BigInt(account.myId),\n      chatId,\n", calls)
+        self.assertNotIn("this.joinGroupCallInternal(", calls)
+        self.assertIn("          inviteHash: opts.inviteHash,\n          e2ePublicKey: opts.publicKey,\n", calls)
+        self.assertIn("    return instance.isE2e ?\n      this.recoverConference(instance, reason) :\n", calls)
+        instance = tree.read(patch.GROUP_CALL)
+        self.assertIn("    return this.isE2e && (!this.chatId || this.chatId === NULL_PEER_ID);\n", instance)
+        self.assertNotIn("getGroupCallJoinAs(", tree.read(patch.JOIN_AS))
+        self.assertNotIn("getGroupCallJoinAs(", tree.read(patch.CALL_SETTINGS))
+        # A browser without RTCRtpScriptTransform is told so on both ways into a chat's call.
+        im = tree.read(patch.IM_MANAGER)
+        self.assertEqual(im.count("        toastNew({langPackKey: 'ConferenceCall.Unsupported'});\n"), 2)
+        self.assertIn("'ConferenceCall.Unsupported': 'Encrypted group calls are not supported in this browser. "
+                      "Open this call in a supported Pluma app.',", tree.read("src/lang.ts"))
+        # No RTMP stream to start or watch.
+        self.assertIn("const IS_LIVE_STREAM_SUPPORTED = false;\n", tree.read(patch.LIVE_STREAM_SUPPORT))
+        self.assertNotIn("watchLiveStream", im)
+        self.assertNotIn("openRtmpCallViewer", im)
+        # Leaving a chat's call for another names the chat's video chat.
+        self.assertIn("    const fromType = currentCall.isConference ? 'Conference' : 'Voice';\n", im)
+        # The report goes over the main connection's data channel, made of the worker's counters.
+        self.assertIn("this.sendDataChannelData({colibriClass: 'PlumaE2EStatus', ...report});",
+                      tree.read(patch.GROUP_CALL_CONNECTION))
+        worker = tree.read(patch.E2E_WORKER)
+        self.assertIn("    case 'getE2eReport':\n", worker)
+        self.assertIn("    countDecryptError(fromUserId, err, new Uint8Array(frame.data));", worker)
+        # A frame naming an epoch of ours whose key fails is no unknown epoch (tde2e Call::decrypt).
+        self.assertIn("    if(named.some((prefix) => own.has(prefix))) {\n      ++counters.otherErrors;\n", worker)
+
+        sources = {rel: tree.read(rel) for rel in tree.sources()}
+        patch.verify_e2e_group_calls(sources)
+        # Each undone edit, and each new reader of a kind of call, way to the join-as list or to the RTMP
+        # player, stops the check; a mention in a comment is none.
+        for rel, old, new, error in (
+            (patch.GROUP_CALLS, "\n", "\nvoid groupCallsController.joinGroupCallInternal(chatId, groupCallId);\n",
+             "groupCallsController.ts: a group call is joined without end-to-end encryption"),
+            (patch.GROUP_CALL_POPUP, "      if(instance.isConference) return {", "      if(instance.e2e) return {",
+             "index.tsx: the edit of task 094 is not there"),
+            (patch.LIVE_STREAM_SUPPORT, "= false;", "= true;", "liveStreamSupport.ts: the edit of task 094 is not there"),
+            (patch.E2E_WORKER, "    ++counters.decrypted;\n", "", "encrypt.worker.ts: the edit of task 094 is not there"),
+            ("src/components/groupCall/videoGrid.ts", "\n", "\nconst isConference = (instance: GroupCallInstance) => !!instance.e2e;\n",
+             "videoGrid.ts: 1 reads of a call's e2e worker, expected 0"),
+            (patch.IM_MANAGER, "\n", "\nconst isConference = (call: GroupCallInstance) => !!call?.e2e;\n",
+             "appImManager.ts: 1 reads of a call's e2e worker, expected 0"),
+            ("src/components/topbarCall.tsx", "\n", "\nconst conference = (i: GroupCallInstance) => i.isConference;\n",
+             "topbarCall.tsx: 1 reads of isConference, expected 0"),
+            ("src/components/groupCall/participantsList.ts", "\n",
+             "\nvoid managers.appGroupCallsManager.getGroupCallJoinAs(peerId);\n",
+             "participantsList.ts: 1 asks for the join-as list, expected 0"),
+            ("src/components/chat/topbar.ts", "\n", "\nvoid openRtmpCallViewer(this.peerId);\n",
+             "topbar.ts: 1 ways into the RTMP player, expected 0"),
+            ("src/components/peerProfile.tsx", "\n", "\nshowRtmpStartStreamPopup({peerId});\n",
+             "peerProfile.tsx: 1 ways to start an RTMP stream, expected 0"),
+        ):
+            with self.subTest(error=error):
+                self.assertIn(old, sources[rel])
+                changed = dict(sources, **{rel: sources[rel].replace(old, new, 1)})
+                with self.assertRaisesRegex(patch.PatchError, re.escape(error)):
+                    patch.verify_e2e_group_calls(changed)
+        rel = "src/components/chat/topbar.ts"
+        patch.verify_e2e_group_calls(dict(sources, **{rel: sources[rel] + "// openRtmpCallViewer(peerId) is gone\n"}))
 
     def test_transcription(self):
         tree, c = self.run_patch()
