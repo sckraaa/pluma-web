@@ -612,6 +612,25 @@ DAMAGE = (
     # No AI message editor: each edit.
     *((rel, old, old.replace(": ", ":  ", 1) if ": " in old else old.replace(" = ", " =  ", 1))
       for rel, old, _ in patch.NO_AI_EDITOR_EDITS),
+    # The service account: its string, and the status of a support account
+    # that shows it.
+    ("src/lang.ts", "  'SupportStatus': 'support',\n", "  'SupportStatus': 'Support',\n"),
+    (patch.USER_STATUS, "        key = 'SupportStatus';\n", "        key = 'Peer.Support';\n"),
+    (patch.USER_STATUS, "        key = 'Bot';\n", "        key = user.pFlags.support ? 'SupportStatus' : 'Bot';\n"),
+    ("src/lib/appImManager.ts", "    const subtitle = getUserStatusString(user);\n",
+     "    const subtitle = user.pFlags.verified ? i18n('SupportStatus') : getUserStatusString(user);\n"),
+    # Voice and round messages to text: their buttons, and a view-once
+    # message drawn as a service line, before either is wrapped.
+    (BUBBLES, patch.TRANSCRIBE_VOICE, patch.TRANSCRIBE_VOICE.replace("true", "false")),
+    (BUBBLES, patch.TRANSCRIBE_ROUND, patch.TRANSCRIBE_ROUND.replace("isRound", "false")),
+    (patch.CAN_SEE_MEDIA, "    // if(!document || (document as Document.document).type !== 'voice') {\n    //   return false;\n    // }\n    return false;\n",
+     "    if(!document || (document as Document.document).type !== 'voice') {\n      return false;\n    }\n    return true;\n"),
+    (BUBBLES, "(isSelfDestructingMediaMessage(message) && !canSeeMessageMedia(message))",
+     "(isSelfDestructingMediaMessage(message) && !isVoice(message))"),
+    (BUBBLES, patch.VIEW_ONCE_RETURN, "    if(returnService && !isSelfDestructingMedia) {\n"),
+    (BUBBLES, patch.VIEW_ONCE_MEDIA, patch.VIEW_ONCE_MEDIA.replace("MessageMedia.messageMediaPhoto)?.ttl_seconds",
+                                                                 "MessageMedia.messageMediaPhoto)?.photo && false")),
+    (BUBBLES, patch.VIEW_ONCE_SERVICE_LINE, "    if(isDrawnAsService(message) && !isSelfDestructingMedia) {\n"),
 )
 
 
@@ -879,9 +898,7 @@ class UpstreamTest(unittest.TestCase):
         for key in patch.SETTINGS_SEARCH_SALE_ROWS:
             self.assertIn(f"  'AppSettingsTab:{key}',\n", tree.read(patch.SETTINGS_SEARCH_OPENERS))
         self.assertIn("!SALE_ENTRIES.has(entry.id)", tree.read(patch.SETTINGS_SEARCH_REGISTRY))
-        # Round videos have no button of their text, and gifts no entry.
-        self.assertIn("    if(false) { // pluma: the server has no transcription to offer\n      wrapRoundVideoBubble({\n",
-                      tree.read(BUBBLES))
+        # Gifts have no entry.
         self.assertNotIn("id: 'gifts'", tree.read("src/components/popups/myQrCode.tsx"))
         self.assertIn("  return `https://pluma.chat/${username}`;\n", tree.read("src/helpers/qrCode/paintQrCode.ts"))
         self.assertEqual(tree.read("src/components/chat/bubbleParts/adminLogsResolver/index.tsx")
@@ -1097,6 +1114,65 @@ class UpstreamTest(unittest.TestCase):
                                      encoding="utf-8")
         with self.assertRaisesRegex(patch.PatchError, "_chatBubble.scss: 1 white checks"):
             patch.verify(tree, c)
+
+    def test_service_account(self):
+        tree, c = self.run_patch()
+        # A support account reads "service account": the text of the string
+        # its status is, whose other languages the server's pack has.
+        lang = tree.read("src/lang.ts")
+        self.assertIn("  'SupportStatus': 'service account',\n", lang)
+        self.assertNotIn("'support'", lang)
+        self.assertIn("      if(user.pFlags.support) {\n        key = 'SupportStatus';\n", tree.read(patch.USER_STATUS))
+        # The account of service notifications keeps its own line.
+        self.assertIn("  'Peer.ServiceNotifications': 'service notifications',\n", lang)
+        # Telegram's text back, the status given another string, the string
+        # shown for something else.
+        for rel, old, new, error in (
+            ("src/lang.ts", "'service account'", "'support'", "lang.ts: a support account is not a service account"),
+            (patch.USER_STATUS, "key = 'SupportStatus';", "key = 'Bot';", "getUserStatusString.ts: the status of a support"),
+            (PROFILE, "\n", "\nconst supportStatus = () => i18n('SupportStatus');\n", "peerProfile.tsx: 1 uses of 'SupportStatus'"),
+        ):
+            with self.subTest(error=error):
+                text = tree.read(rel)
+                (self.root / rel).write_text(text.replace(old, new, 1), encoding="utf-8")
+                with self.assertRaisesRegex(patch.PatchError, error):
+                    patch.verify(tree, c)
+                (self.root / rel).write_text(text, encoding="utf-8")
+        # A mention in a comment is none.
+        (self.root / PROFILE).write_text(tree.read(PROFILE) + "// 'SupportStatus' is the status of a support account\n",
+                                         encoding="utf-8")
+        patch.verify(tree, c)
+
+    def test_transcription(self):
+        tree, c = self.run_patch()
+        # A voice and a round message offer their text, as upstream does.
+        bubbles = tree.read(BUBBLES)
+        self.assertIn(patch.TRANSCRIBE_VOICE, bubbles)
+        self.assertIn(patch.TRANSCRIBE_ROUND, bubbles)
+        self.assertNotIn("canTranscribeVoice: false", bubbles)
+        self.assertNotIn("no transcription", bubbles)
+        # A view-once one is a service line, and the chat returns with it
+        # before wrapping either: the upstream change of each is refused.
+        service = bubbles[bubbles.index(patch.VIEW_ONCE_RETURN):]
+        for rel, old, new, error in (
+            (BUBBLES, service, service.replace(patch.TRANSCRIBE_ROUND, ""), "bubbles.ts: a voice or round message has no button"),
+            (BUBBLES, service, patch.TRANSCRIBE_ROUND + service.replace(patch.TRANSCRIBE_ROUND, "    if(false) {\n      wrapRoundVideoBubble({\n"),
+             "bubbles.ts: a service line is wrapped as a voice or round message"),
+            (BUBBLES, "&& !canSeeMessageMedia(message)", "&& false", "bubbles.ts: a view-once message is not drawn as a service line"),
+            (BUBBLES, "?.ttl_seconds;\n", "?.photo && false;\n", "bubbles.ts: a view-once message is not drawn as a service line"),
+            (BUBBLES, patch.VIEW_ONCE_SERVICE_SET, "      returnService = !isSelfDestructingMedia;\n",
+             "bubbles.ts: a service line is not returned with as it was"),
+            (patch.CAN_SEE_MEDIA, "    return false;\n  }\n\n  return true;", "    return true;\n  }\n\n  return true;",
+             "canSeeMessageMedia.ts: a view-once media is not hidden"),
+        ):
+            with self.subTest(error=error):
+                text = tree.read(rel)
+                self.assertIn(old, text)
+                (self.root / rel).write_text(text.replace(old, new, 1), encoding="utf-8")
+                with self.assertRaisesRegex(patch.PatchError, error):
+                    patch.verify(tree, c)
+                (self.root / rel).write_text(text, encoding="utf-8")
+        patch.verify(tree, c)
 
     def test_saved_tags_file_of_upstream(self):
         self.written.add(SAVED_TAGS)

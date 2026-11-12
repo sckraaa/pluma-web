@@ -1838,6 +1838,8 @@ def patch(tree, c):
     premium_stickers(tree)
     premium_for_everyone(tree)
     no_ai_editor(tree)
+    service_account(tree)
+    transcription(tree)
 
     # Telegram's site off the screens a user reaches.
     for rel, old, new in TELEGRAM_SITE_EDITS:
@@ -1963,6 +1965,8 @@ def verify(tree, c):
     verify_premium_stickers(tree, sources)
     verify_premium_for_everyone(tree)
     verify_no_ai_editor(sources)
+    verify_service_account(sources)
+    verify_transcription(sources)
 
     # Links: pluma.chat is a link host of the app, its exact host only, and
     # no Telegram link host is left but the ones LINK_KEEP knows.
@@ -2006,16 +2010,6 @@ PREMIUM_FOR_EVERYONE_EDITS = (
     ("src/components/sidebarLeft/index.ts",
      "      if(isPremium) sidebarHeader.append(statusBtnIcon);\n      else statusBtnIcon.remove();\n",
      "      // pluma: the server does not serve account.updateEmojiStatus.\n      statusBtnIcon.remove();\n"),
-    ("src/components/chat/bubbles.ts",
-     "                canTranscribeVoice: true\n              });\n              preview.append(docDiv);\n",
-     "                canTranscribeVoice: false // pluma: the server has no transcription to offer\n              });\n              preview.append(docDiv);\n"),
-    ("src/components/chat/bubbles.ts",
-     "              canTranscribeVoice: true,\n              translatableParams,\n",
-     "              canTranscribeVoice: false, // pluma: the server has no transcription to offer\n              translatableParams,\n"),
-    # A round video's button of its text is what wrapRoundVideoBubble adds.
-    ("src/components/chat/bubbles.ts",
-     "    if(isRound) {\n      wrapRoundVideoBubble({\n",
-     "    if(false) { // pluma: the server has no transcription to offer\n      wrapRoundVideoBubble({\n"),
     # The other way to an emoji status: the menu of a custom emoji.
     ("src/helpers/dom/createStickersContextMenu.ts",
      "    verify: () => !!(rootScope.premium && doc)\n",
@@ -2208,6 +2202,102 @@ def verify_no_ai_editor(sources):
         if found != AI_BUTTON_USES.get(rel, 0):
             raise PatchError(f"{rel}: {found} AI editor buttons, expected {AI_BUTTON_USES.get(rel, 0)}; "
                              "another way into the AI editor")
+
+
+# --- the service account (task 080) --------------------------------------------
+# Pluma's support account (user.support, sent with no online status) is no
+# volunteer of Telegram's support: where a user's last seen goes it reads
+# "service account" (the owner's decision, 2026-11-11). Every such line of the
+# client comes from getUserStatusString, which gives a support account the
+# string SupportStatus: the chat's top bar and the profile through
+# appImManager.getUserStatus, and the lists of contacts, of members, of search
+# and of the popups. The string keeps its key and gets a new text: lang.ts has
+# the English one, and the server's language pack the same key in every other
+# language (pkg/langpack/override.json of the server), so that a downloaded
+# language does not bring Telegram's "support" back. The account of service
+# notifications (777000) has a string of its own, Peer.ServiceNotifications.
+USER_STATUS = "src/components/wrappers/getUserStatusString.ts"
+SERVICE_ACCOUNT_STRING = ("src/lang.ts", "  'SupportStatus': 'support',\n", "  'SupportStatus': 'service account',\n")
+# What the text relies on: the status of a support account is this string,
+# here alone.
+SERVICE_ACCOUNT_STATUS = "      if(user.pFlags.support) {\n        key = 'SupportStatus';\n        break;\n      }\n"
+_SUPPORT_STATUS_USE = re.compile(r"""['"`]SupportStatus['"`]""")
+SUPPORT_STATUS_USES = {"src/lang.ts": 1, USER_STATUS: 1}
+
+
+def service_account(tree):
+    tree.expect(USER_STATUS, SERVICE_ACCOUNT_STATUS)
+    tree.replace(*SERVICE_ACCOUNT_STRING)
+
+
+def verify_service_account(sources):
+    rel, old, new = SERVICE_ACCOUNT_STRING
+    if sources[rel].count(new) != 1 or old in sources[rel]:
+        raise PatchError(f"{rel}: a support account is not a service account")
+    if sources[USER_STATUS].count(SERVICE_ACCOUNT_STATUS) != 1:
+        raise PatchError(f"{USER_STATUS}: the status of a support account is not the string SupportStatus")
+    for rel, text in sources.items():
+        found = len(_SUPPORT_STATUS_USE.findall(_COMMENT.sub("", text)))
+        if found != SUPPORT_STATUS_USES.get(rel, 0):
+            raise PatchError(f"{rel}: {found} uses of 'SupportStatus', expected {SUPPORT_STATUS_USES.get(rel, 0)}; "
+                             "is it still the status of a support account, and of nothing else?")
+
+
+# --- voice and round messages to text -------------------------------------------
+# Every user has Premium (ADR 0041) and the server transcribes voice and round
+# messages for everybody (messages.transcribeAudio), so the chat offers their
+# button as upstream does: wrapDocument gives a voice row its button
+# (canTranscribeVoice), and wrapRoundVideoBubble a round video its own.
+# A view-once voice or round message is never transcribed (the owner's
+# decision, 2026-11-12), and Web K offers it no button as it is: a media with
+# ttl_seconds is one canSeeMessageMedia hides, so the chat draws the message as
+# a service line (isDrawnAsService) and returns before it wraps the document or
+# the round video. The check fails when upstream changes any of that.
+TRANSCRIBE_VOICE = "              canTranscribeVoice: true,\n              translatableParams,\n"
+TRANSCRIBE_ROUND = "    if(isRound) {\n      wrapRoundVideoBubble({\n"
+CAN_SEE_MEDIA = "src/lib/appManagers/utils/messages/canSeeMessageMedia.ts"
+VIEW_ONCE_HIDDEN = ("  if((media as MessageMedia.messageMediaPhoto).ttl_seconds) {\n"
+                    "    // const {document} = (media as MessageMedia.messageMediaDocument);\n"
+                    "    // if(!document || (document as Document.document).type !== 'voice') {\n"
+                    "    //   return false;\n"
+                    "    // }\n"
+                    "    return false;\n"
+                    "  }\n")
+VIEW_ONCE_MEDIA = ("const isSelfDestructingMediaMessage = (message: Message.message) => "
+                   "!!(message.media as MessageMedia.messageMediaPhoto)?.ttl_seconds;\n")
+VIEW_ONCE_AS_SERVICE = ("  return isStoryMentionMessage(message) || "
+                        "(isSelfDestructingMediaMessage(message) && !canSeeMessageMedia(message));\n")
+# renderMessage: the branch of a service line sets returnService, and the
+# chat returns with it before it wraps a voice row or a round video.
+VIEW_ONCE_SERVICE_LINE = "    if(isDrawnAsService(message)) {\n"
+VIEW_ONCE_SERVICE_SET = "      returnService = true;\n"
+VIEW_ONCE_RETURN = "    if(returnService) {\n"
+VIEW_ONCE_ORDER = (VIEW_ONCE_SERVICE_LINE, VIEW_ONCE_SERVICE_SET, VIEW_ONCE_RETURN)
+
+
+def transcription(tree):
+    for text in (TRANSCRIBE_VOICE, TRANSCRIBE_ROUND, VIEW_ONCE_MEDIA, VIEW_ONCE_AS_SERVICE, *VIEW_ONCE_ORDER):
+        tree.expect(BUBBLES, text)
+    tree.expect(CAN_SEE_MEDIA, VIEW_ONCE_HIDDEN)
+
+
+def verify_transcription(sources):
+    bubbles = sources[BUBBLES]
+    for text in (TRANSCRIBE_VOICE, TRANSCRIBE_ROUND):
+        if bubbles.count(text) != 1:
+            raise PatchError(f"{BUBBLES}: a voice or round message has no button of its text")
+    if sources[CAN_SEE_MEDIA].count(VIEW_ONCE_HIDDEN) != 1:
+        raise PatchError(f"{CAN_SEE_MEDIA}: a view-once media is not hidden, so it may offer its transcription")
+    if bubbles.count(VIEW_ONCE_MEDIA) != 1 or bubbles.count(VIEW_ONCE_AS_SERVICE) != 1:
+        raise PatchError(f"{BUBBLES}: a view-once message is not drawn as a service line, "
+                         "which offers no transcription")
+    if any(bubbles.count(text) != 1 for text in VIEW_ONCE_ORDER):
+        raise PatchError(f"{BUBBLES}: a service line is not returned with as it was, "
+                         "so a view-once message may be wrapped as a voice or round one")
+    order = [bubbles.find(text) for text in VIEW_ONCE_ORDER]
+    if order != sorted(order) or order[-1] > min(bubbles.find(TRANSCRIBE_VOICE), bubbles.find(TRANSCRIBE_ROUND)):
+        raise PatchError(f"{BUBBLES}: a service line is wrapped as a voice or round message, "
+                         "so a view-once one would offer its transcription")
 
 
 # --- the screens of the login code ----------------------------------------------
