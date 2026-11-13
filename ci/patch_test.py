@@ -1245,6 +1245,33 @@ class UpstreamTest(unittest.TestCase):
         self.assertIn("  'PlumaCall.EncryptionFailed': 'The encryption of this call keeps failing, so you left it. "
                       "Join it again.',\n", tree.read("src/lang.ts"))
 
+        # A join CONF_WRITE_CHAIN_INVALID refuses goes again on the last block: 10 refusals in a row end it only
+        # when the last block read after each is the one the refused block was built on, 100 attempts at most
+        # while the chain moves (ADR 0060 §5). The join hands the connection the block its own was built on.
+        self.assertNotIn("maxRetries", connection)
+        self.assertNotIn("Caps at 5 retries", connection)
+        loop = connection[connection.index("    const maxStillRefusals = 10;\n"):]
+        loop = loop[:loop.index("        rebuiltBlock = true;\n")]
+        self.assertIn("    const maxAttempts = 100;\n", loop)
+        self.assertIn("    let stillRefusals = 0;\n", loop)
+        self.assertIn("    for(let attempt = 0; ; attempt++) {\n", loop)
+        self.assertIn("        if(!isChainRace || attempt >= maxAttempts - 1) throw err;\n"
+                      "        if(!rebuildBlock) throw err;\n"
+                      "        const refusedOn = chainHead?.();\n"
+                      "        const newBlock = await rebuildBlock();\n"
+                      "        const builtOn = chainHead?.();\n"
+                      "        const chainMoved = builtOn !== undefined && "
+                      "(refusedOn === undefined || !bytesCmp(refusedOn, builtOn));\n"
+                      "        stillRefusals = chainMoved ? 0 : stillRefusals + 1;\n"
+                      "        if(stillRefusals >= maxStillRefusals) throw err;\n", loop)
+        self.assertIn("import bytesCmp from '@helpers/bytes/bytesCmp';\n", connection)
+        # A function cannot go to the worker, and the join's callbacks go once the join is done.
+        self.assertIn("        e2eRebuildBlock: undefined,\n        e2eChainHead: undefined,\n", connection)
+        self.assertIn("    this.options.e2eChainHead = undefined;\n", connection)
+        self.assertEqual(calls.count("      joinChainHead = head.block;\n"), 2)
+        self.assertIn("        rebuildBlock: rebuildJoinBlock,\n        chainHead: () => joinChainHead,\n", calls)
+        self.assertIn("          e2eChainHead: opts.chainHead,\n", calls)
+
         sources = {rel: tree.read(rel) for rel in tree.sources()}
         patch.verify_e2e_group_calls(sources)
         # Each undone edit, and each new reader of a kind of call, way to the join-as list or to the RTMP
@@ -1259,6 +1286,10 @@ class UpstreamTest(unittest.TestCase):
              "encrypt.worker.ts: the edit of task 094 is not there"),
             (patch.GROUP_CALL, "        this.requestConferenceRecovery('e2e-failure');\n",
              "        this.hangUpAfterFatalFailure();\n", "groupCallInstance.ts: the edit of task 094 is not there"),
+            (patch.GROUP_CALL_CONNECTION, "        if(stillRefusals >= maxStillRefusals) throw err;\n", "",
+             "groupCallConnectionInstance.ts: the edit of task 094 is not there"),
+            (patch.GROUP_CALLS, "        chainHead: () => joinChainHead,\n", "",
+             "groupCallsController.ts: the edit of task 094 is not there"),
             (patch.GROUP_CALL, "\n", "\nvoid this.requestConferenceRecovery('epoch-skew');\n",
              "groupCallInstance.ts: rejoins for ['epoch-skew'], which the self-healing has not sorted"),
             (patch.GROUP_CALL, "requestConferenceRecovery('sync-unrecoverable-locally')",

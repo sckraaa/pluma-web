@@ -2362,7 +2362,13 @@ def verify_transcription(sources):
 # frames came from senders and none decrypted while its chain is current. Those rejoins wait 0, 2 and 5 s and up
 # to 1 s more at random, and the fourth within 5 minutes leaves the call with PlumaCall.EncryptionFailed
 # (GroupCallsController.recoverConference). The rejoins of a failed transport stay as upstream has them and count
-# for nothing; so do the retries of a join that met CONF_WRITE_CHAIN_INVALID (5 attempts, within the ADR's 10).
+# for nothing; so do the retries of a join that met CONF_WRITE_CHAIN_INVALID, which are part of that join.
+#
+# Those retries, ADR 0060 §5 (as of 2026-11-13): upstream reads the last block again and joins on it, 5 attempts
+# at most (groupCallConnectionInstance.ts:385, 408), which drops members of a herd that joins again at once after
+# a restart of the SFU, each a block on the same height and one a round through. A refusal counts toward 10 in a
+# row only when the last block read after it is the one the refused block was built on; while the chain moves
+# the join goes on, for 100 attempts at most.
 
 GROUP_CALLS = "src/lib/calls/groupCallsController.ts"
 GROUP_CALL = "src/lib/calls/groupCallInstance.ts"
@@ -3353,6 +3359,78 @@ E2E_GROUP_CALL_EDITS = (
      f"            // pluma: no recording, phone.toggleGroupCallRecord is not served {_ADR}\n"
      "            icon: 'settings',\n"),
     (RTMP_VIEWER, "import {showRtmpRecordPopup} from '@components/rtmp/recordPopup';\n", ""),
+    # A join CONF_WRITE_CHAIN_INVALID refuses goes again on the last block: 10 refusals in a row count only when
+    # the last block stayed the same, and while it moves the join goes on, for 100 attempts at most. The join
+    # remembers the last block its own was built on (joinConferenceAttempt), the connection compares.
+    (GROUP_CALLS,
+     "    const initialOffsets: Partial<{0: number; 1: number}> = {};\n",
+     "    const initialOffsets: Partial<{0: number; 1: number}> = {};\n"
+     "    // pluma: the chain's last block the join's own block was built on, none on an empty chain: the\n"
+     "    // connection tells by it a refusal of a chain that moves from one of a chain that stands (ADR 0060 §5\n"
+     "    // of the server)\n"
+     "    let joinChainHead: Uint8Array | undefined;\n"),
+    (GROUP_CALLS,
+     "      initialOffsets[0] = head.nextOffset;\n      return head.block ?\n",
+     "      initialOffsets[0] = head.nextOffset;\n      joinChainHead = head.block;\n      return head.block ?\n"),
+    (GROUP_CALLS,
+     "      initialOffsets[0] = head.nextOffset;\n      if(!head.block) {\n",
+     "      initialOffsets[0] = head.nextOffset;\n      joinChainHead = head.block;\n      if(!head.block) {\n"),
+    (GROUP_CALLS,
+     "        rebuildBlock: rebuildJoinBlock,\n",
+     "        rebuildBlock: rebuildJoinBlock,\n        chainHead: () => joinChainHead,\n"),
+    (GROUP_CALLS,
+     "    rebuildBlock?: () => Promise<Uint8Array>;\n",
+     "    rebuildBlock?: () => Promise<Uint8Array>;\n"
+     "    // pluma: the chain's last block the join's block was built on, the one rebuildBlock read last\n"
+     "    chainHead?: () => Uint8Array | undefined;\n"),
+    (GROUP_CALLS,
+     "          e2eRebuildBlock: opts.rebuildBlock,\n",
+     "          e2eRebuildBlock: opts.rebuildBlock,\n          e2eChainHead: opts.chainHead,\n"),
+    (GROUP_CALL_CONNECTION,
+     "import forEachReverse from '@helpers/array/forEachReverse';\n",
+     "import forEachReverse from '@helpers/array/forEachReverse';\nimport bytesCmp from '@helpers/bytes/bytesCmp';\n"),
+    (GROUP_CALL_CONNECTION,
+     "    e2eRebuildBlock?: () => Promise<Uint8Array>,\n",
+     "    e2eRebuildBlock?: () => Promise<Uint8Array>,\n"
+     "    // pluma: the chain's last block the join's block was built on, read again by e2eRebuildBlock; none on an\n"
+     "    // empty chain. Whether it changed after a refusal decides whether the refusal counts (ADR 0060 §5 of the\n"
+     "    // server).\n"
+     "    e2eChainHead?: () => Uint8Array | undefined,\n"),
+    (GROUP_CALL_CONNECTION,
+     "        e2eRebuildBlock: undefined,\n        e2eCommitRebuiltBlock: undefined,\n",
+     "        e2eRebuildBlock: undefined,\n        e2eChainHead: undefined,\n        e2eCommitRebuiltBlock: undefined,\n"),
+    (GROUP_CALL_CONNECTION,
+     "    this.options.e2eRebuildBlock = undefined;\n",
+     "    this.options.e2eRebuildBlock = undefined;\n    this.options.e2eChainHead = undefined;\n"),
+    (GROUP_CALL_CONNECTION,
+     "    // only the `block` field changes per attempt. Caps at 5 retries to bound\n"
+     "    // pathological loops; tdlib doesn't cap but we're conservative.\n",
+     "    // only the `block` field changes per attempt; how many attempts, the rule\n"
+     "    // below says (pluma).\n"),
+    (GROUP_CALL_CONNECTION,
+     "    const maxRetries = 5;\n",
+     "    // pluma: CONF_WRITE_CHAIN_INVALID repeats the join on the last block (ADR 0060 §5 of the server). A refusal\n"
+     "    // counts toward 10 in a row only when the last block read after it is the one the refused block was built\n"
+     "    // on: the chain stands, so the refusal is no race. While the chain moves, as when every member joins again\n"
+     "    // at once after a restart of the SFU and one join a round goes through, the join goes on, for 100 attempts\n"
+     "    // at most. Then it is the join's error. A join without e2eChainHead cannot see the chain move, and each\n"
+     "    // of its refusals counts.\n"
+     "    const maxStillRefusals = 10;\n"
+     "    const maxAttempts = 100;\n"
+     "    const chainHead = options.type === 'main' ? options.e2eChainHead : undefined;\n"
+     "    let stillRefusals = 0;\n"),
+    (GROUP_CALL_CONNECTION,
+     "        if(!isChainRace || attempt >= maxRetries - 1) throw err;\n"
+     "        if(!rebuildBlock) throw err;\n"
+     "        const newBlock = await rebuildBlock();\n",
+     "        if(!isChainRace || attempt >= maxAttempts - 1) throw err;\n"
+     "        if(!rebuildBlock) throw err;\n"
+     "        const refusedOn = chainHead?.();\n"
+     "        const newBlock = await rebuildBlock();\n"
+     "        const builtOn = chainHead?.();\n"
+     "        const chainMoved = builtOn !== undefined && (refusedOn === undefined || !bytesCmp(refusedOn, builtOn));\n"
+     "        stillRefusals = chainMoved ? 0 : stillRefusals + 1;\n"
+     "        if(stillRefusals >= maxStillRefusals) throw err;\n"),
 )
 
 # What the edits rely on and do not change: the end-to-end join of a conference by an inputGroupCall with a chat,
@@ -3381,8 +3459,7 @@ E2E_GROUP_CALL_RELIES_ON = (
      "  const live = IS_LIVE_STREAM_SUPPORTED ? createChatLivePlate(topbar, chat, managers) : undefined;\n", 1),
     ("src/components/peerProfile.tsx", "    return !isRtmp() || IS_LIVE_STREAM_SUPPORTED;\n", 1),
     ("src/lib/appDialogsManager.ts", "    if(IS_LIVE_STREAM_SUPPORTED) rtmpCallsController.construct(managers);\n", 1),
-    # The self-healing: an instance's reasons reach the controller's rejoin, which pauses and toasts with these;
-    # the retries of a join that met CONF_WRITE_CHAIN_INVALID stay within the ADR's 10.
+    # The self-healing: an instance's reasons reach the controller's rejoin, which pauses and toasts with these.
     (GROUP_CALL, "  private requestConferenceRecovery(reason: string): void {\n", 1),
     (GROUP_CALL, "    this.dispatchEvent('conferenceRecoveryRequired', reason);\n", 1),
     (GROUP_CALLS, "      createdInstance.addEventListener('conferenceRecoveryRequired', (reason) => {\n"
@@ -3390,7 +3467,6 @@ E2E_GROUP_CALL_RELIES_ON = (
     (GROUP_CALLS, "import pause from '@helpers/schedulers/pause';\n", 1),
     (GROUP_CALLS, "import {toastNew} from '@components/toast';\n", 1),
     (GROUP_CALLS, "import {GroupCallId, GroupCallConnectionType} from '@appManagers/appGroupCallsManager';\n", 1),
-    (GROUP_CALL_CONNECTION, "    const maxRetries = 5;\n", 1),
     # What the report reads: the bytes of a frame, before the frame takes them, on both sides.
     (E2E_WORKER, "    const encrypted = new Uint8Array(frame.data);\n    let decrypted = await call.decrypt(", 1),
 )
