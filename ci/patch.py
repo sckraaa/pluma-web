@@ -3570,22 +3570,47 @@ CALL_BACKGROUNDS = {
 }
 # The other colours of calls are mapped by meaning onto those sets: Telegram's blue and purple (muted, waiting,
 # a raised hand, connecting) onto the connecting one, green (speaking, unmuted) onto the connected one, red and
-# orange (muted by an admin, leaving) onto the weak one, and the text of a state onto the palette's accents on a
-# dark ground (#9DBB9F the accent, #7FA082 the soft one). The group call's screen is always dark; the call's
-# plate over a chat keeps white text on its gradient. Web K defines them in:
+# orange (muted by an admin) onto the weak one, and the text of a state onto the palette's accents on a dark
+# ground (#9DBB9F the accent, #7FA082 the soft one). The group call's screen is always dark; the call's plate
+# over a chat keeps white text on its gradient. The buttons that end, decline or leave a call stay red and the
+# one that answers it green, as in Telegram's other clients (the owner's decision of 2026-11-13; CALL_BUTTONS
+# below). Web K defines them in:
 #   - components/call/index.tsx: the 1:1 call's backgrounds;
 #   - scss/base.scss: the group call's --gc-* colours, which its stylesheets, the participants' and the
 #     microphone's lottie colours (groupCall/index.tsx getColorByMutedState), the avatars' waves (avatarBlobs.ts)
-#     and the microphone's gradients and waves (microphoneBlobs.ts) all read, and the 1:1 call's green button;
+#     and the microphone's gradients and waves (microphoneBlobs.ts) all read;
+#   - scss/partials/popups/_groupCall.scss and _call.scss: the call's screens, the only places that take the
+#     state texts in the sage palette (CALL_TEXT_SCOPES below);
 #   - scss/partials/_chatPinned.scss: the call's plate over a chat (.pinned-call), its gradients per state and its
 #     microphone button;
 #   - components/topbarWeave.ts: the plate's former canvas gradients, unused but kept in step;
 #   - components/popupSandbox/stories/calls.ts: the fake camera of the development sandbox's call stories.
 CALL_COLORS = "src/components/call/index.tsx"
+CALL_POPUP = "src/scss/partials/popups/_call.scss"
 CALL_PLATE = "src/scss/partials/_chatPinned.scss"
 CALL_WEAVE = "src/components/topbarWeave.ts"
 CALL_SANDBOX = "src/components/popupSandbox/stories/calls.ts"
 _SAGE = "(task 017 of the server)"
+# The group call's state texts (--gc-green/blue/red-text-color) are also read outside calls: by polls, a right
+# and a wrong answer (chat/bubbleParts/pollMessageContent/styles.module.scss 280-349), and by the markup's diff
+# (scss/partials/_markup.scss 110, 115). The root keeps Telegram's (base.scss 300-302); the sage ones are
+# --gc-call-*-text-color, which the screens of the group call (.popup-group-call, groupCall/index.tsx 845) and
+# of a 1:1 call (.popup-call, call/index.tsx 829) take as their --gc-*-text-color.
+CALL_TEXT_OUTSIDE = ("  --gc-green-text-color: #5CC85E;\n"
+                     "  --gc-blue-text-color: #3390ec;\n"
+                     "  --gc-red-text-color: #ff595a;\n")
+_CALL_TEXT_SCOPE = ("  // pluma: the call's state texts are the sage ones (base.scss --gc-call-*) inside its screen only;\n"
+                    "  // polls and the markup's diff read the root's, which keep Telegram's\n"
+                    "  --gc-green-text-color: var(--gc-call-green-text-color);\n"
+                    "  --gc-blue-text-color: var(--gc-call-blue-text-color);\n"
+                    "  --gc-red-text-color: var(--gc-call-red-text-color);\n")
+CALL_TEXT_SCOPES = tuple((rel, head + "\n" + tail, head + "\n" + _CALL_TEXT_SCOPE + "\n" + tail)
+                         for rel, head, tail in (
+    ("src/scss/partials/popups/_groupCall.scss", '.popup-group-call {\n  $parent: ".popup";\n',
+     "  // A panel, not a sheet:"),
+    (CALL_POPUP, '.popup-call {\n  $parent: ".popup";\n', "  #{$parent} {\n"),
+))
+_CALL_TEXT_SET = re.compile(r"--gc-(?:green|blue|red)-text-color\s*:")
 
 CALL_COLOR_EDITS = (
     (CALL_COLORS,
@@ -3616,10 +3641,10 @@ CALL_COLOR_EDITS = (
      "  --gc-green-text-color: #5CC85E;\n"
      "  --gc-blue-text-color: #3390ec;\n"
      "  --gc-red-text-color: #ff595a;\n",
-     f"  // pluma: the call's colours in the sage palette {_SAGE}: leaving\n"
-     "  // and red the weak signal's, unmuted and green the connected call's, muted, a raised hand and blue the\n"
-     "  // connecting call's\n"
-     "  --gc-button-leave-color: rgba(122, 78, 59, .92);\n"
+     f"  // pluma: the call's colours in the sage palette {_SAGE}: red the\n"
+     "  // weak signal's, unmuted and green the connected call's, muted, a raised hand and blue the connecting\n"
+     "  // call's; Leave keeps Telegram's red\n"
+     "  --gc-button-leave-color: rgba(100, 50, 50, .92);\n"
      "  --gc-button-unmuted-color: rgba(79, 110, 82, .92);\n"
      "  --gc-button-muted-color: rgba(44, 58, 45, .92);\n"
      "  --gc-button-hand-color: rgba(58, 74, 60, .92);\n"
@@ -3631,10 +3656,23 @@ CALL_COLOR_EDITS = (
      "\n"
      "  --gc-primary-text-color: #fff;\n"
      "  --gc-secondary-text-color: #aaaaaa;\n"
-     "  // pluma: speaking the accent, waiting the soft accent of the dark theme, muted by an admin the weak signal's\n"
-     "  --gc-green-text-color: #9DBB9F;\n"
-     "  --gc-blue-text-color: #7FA082;\n"
-     "  --gc-red-text-color: #B97A55;\n"),
+     "  // pluma: polls and the markup's diff read these too, so they keep Telegram's; the call's screens take\n"
+     "  // the sage ones below instead (CALL_TEXT_SCOPES)\n"
+     + CALL_TEXT_OUTSIDE +
+     "  // pluma: the call's state texts in the sage palette: speaking the accent, waiting the soft accent of the\n"
+     "  // dark theme, muted by an admin the weak signal's\n"
+     "  --gc-call-green-text-color: #9DBB9F;\n"
+     "  --gc-call-blue-text-color: #7FA082;\n"
+     "  --gc-call-red-text-color: #B97A55;\n"),
+    *CALL_TEXT_SCOPES,
+    # The participants' and the microphone's lottie colours read the root's custom properties
+    # (helpers/dom/customProperties.ts reads getComputedStyle(document.documentElement)), not the call's screen.
+    (GROUP_CALL_POPUP,
+     "  const propertyValue = customProperties.getProperty('gc-' + colorStr + '-text-color');\n",
+     "  // pluma: the state colours of the call are the sage ones (base.scss --gc-call-*); the root's\n"
+     "  // --gc-*-text-color keep Telegram's for polls and the markup's diff\n"
+     "  const prefix = colorStr === 'secondary' ? 'gc-' : 'gc-call-';\n"
+     "  const propertyValue = customProperties.getProperty(prefix + colorStr + '-text-color');\n"),
     ("src/scss/base.scss",
      "  --gc-microphone-unmuted-from: #00A3B4;\n"
      "  --gc-microphone-unmuted-to: #00CB47;\n"
@@ -3708,6 +3746,17 @@ CALL_COLOR_EDITS = (
      "    const MUTED_STOPS: ColorStops = [[0, '#2C3A2D'], [1, '#4F6E52']];\n"
      "    const CONNECTING_STOPS: ColorStops = [[0, '#3A4A3C'], [1, '#3A4A3C']];\n"
      "    const RTMP_STOPS: ColorStops = [[0, '#3A4A3C'], [.5, '#5B7A5E'], [1, '#4F6E52']];\n"),
+    # Accept of a 1:1 call (call/index.tsx 569-573, CallButton color="green"; _call.scss 348-350) read the
+    # group call's speaking green, which is sage now; it keeps Telegram's. Decline and End take the theme's
+    # danger colour (_call.scss 344-346) and stay as they are.
+    (CALL_POPUP,
+     "    &-green {\n"
+     "      background-color: var(--gc-green-text-color) !important;\n"
+     "    }\n",
+     "    // pluma: Accept keeps Telegram's green; --gc-green-text-color, speaking, is the palette's\n"
+     "    &-green {\n"
+     "      background-color: #5CC85E !important;\n"
+     "    }\n"),
     (CALL_SANDBOX,
      "    gradient.addColorStop(0, '#3e917a');\n"
      "    gradient.addColorStop(0.5, '#53a4d1');\n"
@@ -3729,6 +3778,13 @@ TELEGRAM_CALL_COLORS = (
 )
 TELEGRAM_CALL_COLORS_SHARED = ("5cc85e", "3390ec", "ff595a", "4588e3", "976fff", "e46ace")
 TELEGRAM_CALL_TINTS = ("100, 50, 50", "27, 66, 42", "38, 53, 76", "71, 40, 63")
+# The buttons that keep Telegram's colours, each exactly as the edits above leave it and only there: Leave of a
+# group call (groupCall/index.tsx 664-668 makes it .group-call-button-red, _groupCall.scss 139-141 paints it
+# with --gc-button-leave-color) and Accept of a 1:1 call.
+CALL_BUTTONS = (
+    ("src/scss/base.scss", "  --gc-button-leave-color: rgba(100, 50, 50, .92);\n"),
+    (CALL_POPUP, "    &-green {\n      background-color: #5CC85E !important;\n    }\n"),
+)
 _TELEGRAM_CALL_COLOR = re.compile(r"(?<![0-9A-Fa-f])(?:" + "|".join(TELEGRAM_CALL_COLORS) + r")(?![0-9A-Fa-f])"
                                   r"|rgba?\((?:" + "|".join(TELEGRAM_CALL_TINTS) + r"),", re.IGNORECASE)
 _TELEGRAM_CALL_COLOR_SHARED = re.compile(r"(?<![0-9A-Fa-f])(?:" + "|".join(TELEGRAM_CALL_COLORS_SHARED) +
@@ -3745,10 +3801,26 @@ def call_colors(tree):
 
 
 def verify_call_colors(sources):
+    for rel, button in CALL_BUTTONS:
+        if sources[rel].count(button) != 1:
+            raise PatchError(f"{rel}: a call's button does not keep Telegram's colour")
+    if sources["src/scss/base.scss"].count(CALL_TEXT_OUTSIDE) != 1:
+        raise PatchError("src/scss/base.scss: the root's --gc-*-text-color, which polls and the markup read, do not "
+                         "keep Telegram's colours")
     for rel, old, new in CALL_COLOR_EDITS:
         if sources[rel].count(new) != 1 or old in sources[rel]:
             raise PatchError(f"{rel}: the call is not in the sage palette")
     for rel, text in sources.items():
+        for r, kept in CALL_BUTTONS + (("src/scss/base.scss", CALL_TEXT_OUTSIDE),):
+            if r == rel:
+                text = text.replace(kept, "")
+        for r, _, scope in CALL_TEXT_SCOPES:
+            if r == rel:
+                text = text.replace(scope, "")
+        if _CALL_TEXT_SET.search(text) or ("gc-call-" in text and not _CALL_UI.match(rel)
+                                           and rel != "src/scss/base.scss"):
+            raise PatchError(f"{rel}: the call's state texts are set or read outside a call's screen; polls and "
+                             "the markup keep Telegram's colours")
         m = _TELEGRAM_CALL_COLOR.search(text)
         if not m and _CALL_UI.match(rel):
             m = _TELEGRAM_CALL_COLOR_SHARED.search(text)

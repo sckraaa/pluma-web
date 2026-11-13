@@ -1334,21 +1334,50 @@ class UpstreamTest(unittest.TestCase):
                       "};\n", tree.read(patch.CALL_COLORS))
         # The group call's colours, which its screen, its lottie icons, the avatars' and the microphone's waves read.
         base = tree.read("src/scss/base.scss")
-        for line in ("  --gc-button-leave-color: rgba(122, 78, 59, .92);\n", "  --gc-green-text-color: #9DBB9F;\n",
-                     "  --gc-blue-text-color: #7FA082;\n", "  --gc-red-text-color: #B97A55;\n",
+        for line in ("  --gc-button-unmuted-color: rgba(79, 110, 82, .92);\n", "  --gc-call-green-text-color: #9DBB9F;\n",
+                     "  --gc-call-blue-text-color: #7FA082;\n", "  --gc-call-red-text-color: #B97A55;\n",
                      "  --gc-microphone-unmuted-from: #5B7A5E;\n", "  --gc-microphone-hand-to: #2C3A2D;\n"):
             with self.subTest(line=line):
                 self.assertIn(line, base)
+        # The state texts are sage inside the call's screens only: the root keeps Telegram's, which polls and the
+        # markup's diff read, and the lottie icons read the sage ones from the root.
+        self.assertIn("  --gc-green-text-color: #5CC85E;\n  --gc-blue-text-color: #3390ec;\n"
+                      "  --gc-red-text-color: #ff595a;\n", base)
+        for rel, head in (("src/scss/partials/popups/_groupCall.scss", ".popup-group-call {\n"),
+                          (patch.CALL_POPUP, ".popup-call {\n")):
+            with self.subTest(rel=rel):
+                text = tree.read(rel)
+                block = text[text.index(head):text.index("\n}\n", text.index(head))]
+                self.assertIn("  --gc-green-text-color: var(--gc-call-green-text-color);\n", block)
+                self.assertIn("  --gc-red-text-color: var(--gc-call-red-text-color);\n", block)
+        self.assertIn("customProperties.getProperty(prefix + colorStr + '-text-color')",
+                      tree.read("src/components/groupCall/index.tsx"))
+        polls = tree.read("src/components/chat/bubbleParts/pollMessageContent/styles.module.scss")
+        self.assertIn("background-color: var(--gc-green-text-color);", polls)
+        self.assertNotIn("gc-call-", polls)
+        self.assertIn("  color: var(--gc-red-text-color);\n", tree.read("src/scss/partials/_markup.scss"))
         # The plate over a chat.
         plate = tree.read(patch.CALL_PLATE)
         self.assertIn("  &.is-unmuted .topbar-call-center {\n    --pc-c1: #5B7A5E;\n", plate)
         self.assertIn("  &.is-muted-by-admin .topbar-call-center {\n    --pc-c1: #8A5A44;\n", plate)
-        # Every colour of a call is one of the palette's: what the edits put is sage, the call's other colours
-        # (white, black, greys, the theme's own) are no colour of Telegram's calls.
+        # The buttons keep Telegram's colours: Leave of a group call its red, Accept of a 1:1 call its green;
+        # Decline and End the theme's danger colour, as upstream.
+        self.assertIn("  --gc-button-leave-color: rgba(100, 50, 50, .92);\n", base)
+        self.assertNotIn("rgba(122, 78, 59", base)
+        popup = tree.read(patch.CALL_POPUP)
+        self.assertIn("    &-red {\n      background-color: var(--danger-color) !important;\n    }\n", popup)
+        self.assertIn("    &-green {\n      background-color: #5CC85E !important;\n    }\n", popup)
+        self.assertIn("    &-red {\n      background-color: var(--gc-button-leave-color) !important;\n    }\n",
+                      tree.read("src/scss/partials/popups/_groupCall.scss"))
+        # Every other colour of a call is one of the palette's: what the edits put is sage, the call's other
+        # colours (white, black, greys, the theme's own) are no colour of Telegram's calls.
         sage = {"3a4a3c", "4f6e52", "2c3a2d", "5b7a5e", "6f8f72", "7fa082", "8a5a44", "a86b4c", "7a4e3b", "b97a55",
                 "9dbb9f"}
         neutral = {"aaaaaa"}  # the secondary text, a grey of the group call that stays
         for rel, _, new in patch.CALL_COLOR_EDITS:
+            for r, kept in patch.CALL_BUTTONS + (("src/scss/base.scss", patch.CALL_TEXT_OUTSIDE),):
+                if r == rel:
+                    new = new.replace(kept, "")
             for color in re.findall(r"#([0-9A-Fa-f]{6})\b|'([0-9a-f]{6}(?:,[0-9a-f]{6})*)'", new):
                 for hex6 in ",".join(filter(None, color)).split(","):
                     with self.subTest(rel=rel, color=hex6):
@@ -1372,6 +1401,32 @@ class UpstreamTest(unittest.TestCase):
              "base.scss: Telegram's call colour '3390ec' is still there"),
             ("src/components/wallet/visual/card/background.ts", "\n", "\nconst glow = '#4EABF8';\n",
              "background.ts: Telegram's call colour '4EABF8' is still there"),
+            # The buttons' colours anywhere but their buttons; a button that lost its colour.
+            ("src/scss/base.scss", "  --gc-tile-background: #2c2c2e;\n",
+             "  --gc-tile-background: #2c2c2e;\n  --gc-alert-color: rgba(100, 50, 50, 1);\n",
+             "base.scss: Telegram's call colour 'rgba(100, 50, 50,' is still there"),
+            (patch.CALL_POPUP, "\n", "\n.x { color: #5CC85E; }\n",
+             "_call.scss: Telegram's call colour '5CC85E' is still there"),
+            ("src/scss/partials/popups/_groupCall.scss", "\n", "\n.x { color: #5cc85e; }\n",
+             "_groupCall.scss: Telegram's call colour '5cc85e' is still there"),
+            ("src/scss/base.scss", "  --gc-button-leave-color: rgba(100, 50, 50, .92);\n",
+             "  --gc-button-leave-color: rgba(122, 78, 59, .92);\n",
+             "base.scss: a call's button does not keep Telegram's colour"),
+            (patch.CALL_POPUP, "#5CC85E !important", "#9DBB9F !important",
+             "_call.scss: a call's button does not keep Telegram's colour"),
+            # The state texts recoloured outside the call's screens: at the root, as polls and the markup read them;
+            # set again elsewhere; the sage ones read by polls.
+            ("src/scss/base.scss", "  --gc-green-text-color: #5CC85E;\n", "  --gc-green-text-color: #9DBB9F;\n",
+             "base.scss: the root's --gc-*-text-color, which polls and the markup read, do not keep Telegram's"),
+            ("src/scss/base.scss", "  --gc-tile-background: #2c2c2e;\n",
+             "  --gc-tile-background: #2c2c2e;\n  --gc-red-text-color: var(--gc-call-red-text-color);\n",
+             "base.scss: the call's state texts are set or read outside a call's screen"),
+            ("src/components/chat/bubbleParts/pollMessageContent/styles.module.scss",
+             "background-color: var(--gc-green-text-color);", "background-color: var(--gc-call-green-text-color);",
+             "styles.module.scss: the call's state texts are set or read outside a call's screen"),
+            ("src/scss/partials/_markup.scss", ".markup-diff-delete {\n",
+             ".markup-diff-delete {\n  --gc-red-text-color: #B97A55;\n",
+             "_markup.scss: the call's state texts are set or read outside a call's screen"),
         ):
             with self.subTest(error=error):
                 self.assertIn(old, sources[rel])
