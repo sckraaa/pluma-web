@@ -39,8 +39,8 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     # The patch tests run every patch against the real upstream, damaged on
-    # purpose; they take about ten minutes.
-    timeout-minutes: 25
+    # purpose; they take about twenty-five minutes.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
