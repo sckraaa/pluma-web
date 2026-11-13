@@ -4,6 +4,7 @@ import io
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import tarfile
@@ -334,6 +335,14 @@ DC = "src/lib/mtproto/dcConfigurator.ts"
 RSA = "src/lib/mtproto/rsaKeysManager.ts"
 APP = "src/config/app.ts"
 
+
+
+def damaged(text):
+    """text with its first word misspelt: a place upstream changed."""
+    i = re.search(r"[A-Za-z]", text).start() + 1
+    return text[:i] + "_" + text[i:]
+
+
 # Damage to each place the patch edits or checks, as (file, text in the
 # pinned upstream, replacement): every one must stop the patch with an error
 # that names the file.
@@ -631,6 +640,11 @@ DAMAGE = (
     (BUBBLES, patch.VIEW_ONCE_MEDIA, patch.VIEW_ONCE_MEDIA.replace("MessageMedia.messageMediaPhoto)?.ttl_seconds",
                                                                  "MessageMedia.messageMediaPhoto)?.photo && false")),
     (BUBBLES, patch.VIEW_ONCE_SERVICE_LINE, "    if(isDrawnAsService(message) && !isSelfDestructingMedia) {\n"),
+    # End-to-end group calls: each edit, and what the edits rely on.
+    *((rel, old, damaged(old)) for rel, old, _ in patch.E2E_GROUP_CALL_EDITS),
+    *((rel, text, damaged(text)) for rel, text, _ in patch.E2E_GROUP_CALL_RELIES_ON),
+    # The colours of calls.
+    *((rel, old, damaged(old)) for rel, old, _ in patch.CALL_COLOR_EDITS),
 )
 
 
@@ -1142,6 +1156,287 @@ class UpstreamTest(unittest.TestCase):
         (self.root / PROFILE).write_text(tree.read(PROFILE) + "// 'SupportStatus' is the status of a support account\n",
                                          encoding="utf-8")
         patch.verify(tree, c)
+
+    def test_e2e_group_calls(self):
+        tree, c = self.run_patch()
+        # A chat's call is joined the end-to-end way, by its id and access hash, with its chat and its speaker
+        # invite, and as the account; the legacy join is left to nothing.
+        calls = tree.read(patch.GROUP_CALLS)
+        self.assertIn("    await this.joinConference({\n      input: groupCallToInput(groupCall),\n"
+                      "      selfUserId: BigInt(account.myId),\n      chatId,\n", calls)
+        self.assertNotIn("this.joinGroupCallInternal(", calls)
+        self.assertIn("          inviteHash: opts.inviteHash,\n          e2ePublicKey: opts.publicKey,\n", calls)
+        self.assertIn("    return instance.isE2e ?\n      this.recoverConference(instance, reason) :\n", calls)
+        instance = tree.read(patch.GROUP_CALL)
+        self.assertIn("    return this.isE2e && (!this.chatId || this.chatId === NULL_PEER_ID);\n", instance)
+        self.assertNotIn("getGroupCallJoinAs(", tree.read(patch.JOIN_AS))
+        self.assertNotIn("getGroupCallJoinAs(", tree.read(patch.CALL_SETTINGS))
+        # A browser without RTCRtpScriptTransform is told so on both ways into a chat's call.
+        im = tree.read(patch.IM_MANAGER)
+        self.assertEqual(im.count("        toastNew({langPackKey: 'ConferenceCall.Unsupported'});\n"), 2)
+        self.assertIn("'ConferenceCall.Unsupported': 'Encrypted group calls are not supported in this browser. "
+                      "Open this call in a supported Pluma app.',", tree.read("src/lang.ts"))
+        # No RTMP stream to start or watch.
+        self.assertIn("const IS_LIVE_STREAM_SUPPORTED = false;\n", tree.read(patch.LIVE_STREAM_SUPPORT))
+        self.assertNotIn("watchLiveStream", im)
+        self.assertNotIn("openRtmpCallViewer", im)
+        # Leaving a chat's call for another names the chat's video chat.
+        self.assertIn("    const fromType = currentCall.isConference ? 'Conference' : 'Voice';\n", im)
+        # No recording to start or stop: the RTMP player's menu had the only entries.
+        rtmp = tree.read(patch.RTMP_VIEWER)
+        self.assertNotIn("Rtmp.MediaViewer.Menu.StartRecording", rtmp)
+        self.assertNotIn("Rtmp.MediaViewer.Menu.StopRecording", rtmp)
+        self.assertNotIn("showRtmpRecordPopup", rtmp)
+        self.assertIn("            text: 'Rtmp.MediaViewer.Menu.StreamSettings',\n", rtmp)
+
+        # The report, PlumaE2EStatus v1: over the main connection's data channel while it is open, every 5 s by
+        # its own timer (none at once), numbered from 1 on each connection, exactly the fields of v1.
+        connection = tree.read(patch.GROUP_CALL_CONNECTION)
+        self.assertNotIn("sendDataChannelData({colibriClass: 'PlumaE2EStatus'", connection)
+        self.assertIn("        this.dataChannel.send(serializeE2eStatusReport(++this.e2eStatusReportSeq, report));\n",
+                      connection)
+        self.assertIn("    }, E2E_STATUS_REPORT_INTERVAL_MS);\n  }\n", connection)
+        self.assertNotIn("    send();\n", connection)
+        self.assertIn("const E2E_STATUS_REPORT_INTERVAL_MS = 5000;\nconst E2E_STATUS_REPORT_MAX_LENGTH = 16384;\n",
+                      connection)
+        body = connection[connection.index("    const json = JSON.stringify({\n"):]
+        body = body[:body.index("    });\n")]
+        self.assertEqual(re.findall(r"^      (\w+)", body, re.M),
+                         ["colibriClass", "v", "seq", "height", "lastBlock", "offset0", "offset1", "error",
+                          "sendEpochs", "decryptEpochs", "unknownEpochs", "encrypted", "encryptFailed", "senders"])
+        self.assertIn("      colibriClass: 'PlumaE2EStatus',\n      v: 1,\n", body)
+        self.assertIn("    return {user, ok, unknownEpoch, tooOld, duplicate, failed, lastOkMs};\n", connection)
+        instance = tree.read(patch.GROUP_CALL)
+        self.assertIn("    return {...report, offset0: this.e2eChainOffsets[0], offset1: this.e2eChainOffsets[1]};\n",
+                      instance)
+        # The worker's counters are since the last report, which takes them; the epoch lists too.
+        worker = tree.read(patch.E2E_WORKER)
+        self.assertIn("    case 'takeE2eReport':\n", worker)
+        self.assertNotIn("getE2eReport", worker)
+        self.assertIn("    counters.ok = counters.unknownEpoch = counters.tooOld = counters.duplicate = "
+                      "counters.failed = 0;\n", worker)
+        self.assertIn("  decryptEpochs.clear();\n  unknownEpochs.clear();\n  encryptedFrames = encryptFailedFrames = 0;\n"
+                      "  return report;\n", worker)
+        self.assertIn("const E2E_REPORT_MAX_EPOCHS = 15;\nconst E2E_REPORT_MAX_UNKNOWN_EPOCHS = 8;\n"
+                      "const E2E_REPORT_MAX_SENDERS = 100;\n", worker)
+        self.assertIn("    countDecryptError(fromUserId, err, new Uint8Array(frame.data));", worker)
+        self.assertIn("    countEncrypted(encrypted); // pluma: for the status report, before the frame takes the bytes\n"
+                      "    frame.data = toFrameData(encrypted);\n", worker)
+        self.assertIn("    countDecrypted(fromUserId, encrypted); // pluma: for the status report\n"
+                      "    frame.data = toFrameData(decrypted);\n", worker)
+        # A frame naming an epoch of ours whose key fails is no unknown epoch (tde2e Call::decrypt).
+        self.assertIn("    if(!named.some((prefix) => own.has(prefix))) {\n      ++counters.unknownEpoch;\n", worker)
+        for field in ("alreadyProcessed", "otherErrors", "encryptErrors", "broadcastOffset", "lastBlockHash: string",
+                      "failure: number", "epochs: number[]", "decrypted: number"):
+            with self.subTest(old_field=field):
+                self.assertNotIn(field, worker + tree.read(patch.E2E_PROTOCOL) + connection)
+
+        # Self-healing: a tde2e failure of a joined call rejoins, it does not leave; the chain behind and nothing
+        # decrypted rejoin too; the controller waits 0, 2, 5 s and leaves at the fourth in 5 minutes.
+        self.assertIn("        this.requestConferenceRecovery('e2e-failure');\n        return;\n", instance)
+        self.assertNotIn("callFailed — leaving", instance)
+        self.assertIn("        this.requestConferenceRecovery('chain-behind');\n", instance)
+        self.assertIn("        this.requestConferenceRecovery('decrypt-stalled');\n", instance)
+        self.assertIn("const E2E_CHAIN_BEHIND_MS = 12000;\n", instance)
+        self.assertIn("const E2E_DECRYPT_STALL_MS = 15000;\n", worker)
+        self.assertIn("const E2E_REJOINS_LIMIT = 3;\nconst E2E_REJOINS_PERIOD_MS = 5 * 60 * 1000;\n"
+                      "const E2E_REJOIN_DELAYS_MS = [0, 2000, 5000];\nconst E2E_REJOIN_JITTER_MS = 1000;\n", calls)
+        self.assertIn("          toastNew({langPackKey: 'PlumaCall.EncryptionFailed'});\n", calls)
+        self.assertIn("  'PlumaCall.EncryptionFailed': 'The encryption of this call keeps failing, so you left it. "
+                      "Join it again.',\n", tree.read("src/lang.ts"))
+
+        # A join CONF_WRITE_CHAIN_INVALID refuses goes again on the last block: 10 refusals in a row end it only
+        # when the last block read after each is the one the refused block was built on, 100 attempts at most
+        # while the chain moves (ADR 0060 §5). The join hands the connection the block its own was built on.
+        self.assertNotIn("maxRetries", connection)
+        self.assertNotIn("Caps at 5 retries", connection)
+        loop = connection[connection.index("    const maxStillRefusals = 10;\n"):]
+        loop = loop[:loop.index("        rebuiltBlock = true;\n")]
+        self.assertIn("    const maxAttempts = 100;\n", loop)
+        self.assertIn("    let stillRefusals = 0;\n", loop)
+        self.assertIn("    for(let attempt = 0; ; attempt++) {\n", loop)
+        self.assertIn("        if(!isChainRace || attempt >= maxAttempts - 1) throw err;\n"
+                      "        if(!rebuildBlock) throw err;\n"
+                      "        const refusedOn = chainHead?.();\n"
+                      "        const newBlock = await rebuildBlock();\n"
+                      "        const builtOn = chainHead?.();\n"
+                      "        const chainMoved = builtOn !== undefined && "
+                      "(refusedOn === undefined || !bytesCmp(refusedOn, builtOn));\n"
+                      "        stillRefusals = chainMoved ? 0 : stillRefusals + 1;\n"
+                      "        if(stillRefusals >= maxStillRefusals) throw err;\n", loop)
+        self.assertIn("import bytesCmp from '@helpers/bytes/bytesCmp';\n", connection)
+        # A function cannot go to the worker, and the join's callbacks go once the join is done.
+        self.assertIn("        e2eRebuildBlock: undefined,\n        e2eChainHead: undefined,\n", connection)
+        self.assertIn("    this.options.e2eChainHead = undefined;\n", connection)
+        self.assertEqual(calls.count("      joinChainHead = head.block;\n"), 2)
+        self.assertIn("        rebuildBlock: rebuildJoinBlock,\n        chainHead: () => joinChainHead,\n", calls)
+        self.assertIn("          e2eChainHead: opts.chainHead,\n", calls)
+
+        sources = {rel: tree.read(rel) for rel in tree.sources()}
+        patch.verify_e2e_group_calls(sources)
+        # Each undone edit, and each new reader of a kind of call, way to the join-as list or to the RTMP
+        # player, stops the check; a mention in a comment is none.
+        for rel, old, new, error in (
+            (patch.GROUP_CALLS, "\n", "\nvoid groupCallsController.joinGroupCallInternal(chatId, groupCallId);\n",
+             "groupCallsController.ts: a group call is joined without end-to-end encryption"),
+            (patch.GROUP_CALL_POPUP, "      if(instance.isConference) return {", "      if(instance.e2e) return {",
+             "index.tsx: the edit of task 094 is not there"),
+            (patch.LIVE_STREAM_SUPPORT, "= false;", "= true;", "liveStreamSupport.ts: the edit of task 094 is not there"),
+            (patch.E2E_WORKER, "    countDecrypted(fromUserId, encrypted); // pluma: for the status report\n", "",
+             "encrypt.worker.ts: the edit of task 094 is not there"),
+            (patch.GROUP_CALL, "        this.requestConferenceRecovery('e2e-failure');\n",
+             "        this.hangUpAfterFatalFailure();\n", "groupCallInstance.ts: the edit of task 094 is not there"),
+            (patch.GROUP_CALL_CONNECTION, "        if(stillRefusals >= maxStillRefusals) throw err;\n", "",
+             "groupCallConnectionInstance.ts: the edit of task 094 is not there"),
+            (patch.GROUP_CALLS, "        chainHead: () => joinChainHead,\n", "",
+             "groupCallsController.ts: the edit of task 094 is not there"),
+            (patch.GROUP_CALL, "\n", "\nvoid this.requestConferenceRecovery('epoch-skew');\n",
+             "groupCallInstance.ts: rejoins for ['epoch-skew'], which the self-healing has not sorted"),
+            (patch.GROUP_CALL, "requestConferenceRecovery('sync-unrecoverable-locally')",
+             "requestConferenceRecovery('sync-forbidden')",
+             "rejoins for ['sync-forbidden', 'sync-unrecoverable-locally'], which the self-healing has not sorted"),
+            (patch.RTMP_VIEWER, "\n", "\nvoid showRtmpRecordPopup();\n",
+             "rtmp.ts: 1 ways to record a call, expected 0"),
+            ("src/components/groupCall/index.tsx", "\n",
+             "\nvoid instance.managers.appGroupCallsManager.startRecording(input, {});\n",
+             "index.tsx: 1 ways to record a call, expected 0"),
+            ("src/components/groupCall/index.tsx", "\n", "\nconst text = 'Rtmp.MediaViewer.Menu.StartRecording';\n",
+             "index.tsx: 1 recording entries, expected 0"),
+            ("src/components/groupCall/videoGrid.ts", "\n", "\nconst isConference = (instance: GroupCallInstance) => !!instance.e2e;\n",
+             "videoGrid.ts: 1 reads of a call's e2e worker, expected 0"),
+            (patch.IM_MANAGER, "\n", "\nconst isConference = (call: GroupCallInstance) => !!call?.e2e;\n",
+             "appImManager.ts: 1 reads of a call's e2e worker, expected 0"),
+            ("src/components/topbarCall.tsx", "\n", "\nconst conference = (i: GroupCallInstance) => i.isConference;\n",
+             "topbarCall.tsx: 1 reads of isConference, expected 0"),
+            ("src/components/groupCall/participantsList.ts", "\n",
+             "\nvoid managers.appGroupCallsManager.getGroupCallJoinAs(peerId);\n",
+             "participantsList.ts: 1 asks for the join-as list, expected 0"),
+            ("src/components/chat/topbar.ts", "\n", "\nvoid openRtmpCallViewer(this.peerId);\n",
+             "topbar.ts: 1 ways into the RTMP player, expected 0"),
+            ("src/components/peerProfile.tsx", "\n", "\nshowRtmpStartStreamPopup({peerId});\n",
+             "peerProfile.tsx: 1 ways to start an RTMP stream, expected 0"),
+        ):
+            with self.subTest(error=error):
+                self.assertIn(old, sources[rel])
+                changed = dict(sources, **{rel: sources[rel].replace(old, new, 1)})
+                with self.assertRaisesRegex(patch.PatchError, re.escape(error)):
+                    patch.verify_e2e_group_calls(changed)
+        rel = "src/components/chat/topbar.ts"
+        patch.verify_e2e_group_calls(dict(sources, **{rel: sources[rel] + "// openRtmpCallViewer(peerId) is gone\n"}))
+
+    def test_call_colors(self):
+        tree, c = self.run_patch()
+        # The 1:1 call's backgrounds: the owner's three sets, the points in Telegram's order.
+        self.assertIn("const GRADIENT_COLORS = {\n"
+                      "  connecting: '3a4a3c,4f6e52,2c3a2d,5b7a5e',\n"
+                      "  active:     '5b7a5e,6f8f72,4f6e52,7fa082',\n"
+                      "  weak:       '8a5a44,a86b4c,7a4e3b,b97a55'\n"
+                      "};\n", tree.read(patch.CALL_COLORS))
+        # The group call's colours, which its screen, its lottie icons, the avatars' and the microphone's waves read.
+        base = tree.read("src/scss/base.scss")
+        for line in ("  --gc-button-unmuted-color: rgba(79, 110, 82, .92);\n", "  --gc-call-green-text-color: #9DBB9F;\n",
+                     "  --gc-call-blue-text-color: #7FA082;\n", "  --gc-call-red-text-color: #B97A55;\n",
+                     "  --gc-microphone-unmuted-from: #5B7A5E;\n", "  --gc-microphone-hand-to: #2C3A2D;\n"):
+            with self.subTest(line=line):
+                self.assertIn(line, base)
+        # The state texts are sage inside the call's screens only: the root keeps Telegram's, which polls and the
+        # markup's diff read, and the lottie icons read the sage ones from the root.
+        self.assertIn("  --gc-green-text-color: #5CC85E;\n  --gc-blue-text-color: #3390ec;\n"
+                      "  --gc-red-text-color: #ff595a;\n", base)
+        for rel, head in (("src/scss/partials/popups/_groupCall.scss", ".popup-group-call {\n"),
+                          (patch.CALL_POPUP, ".popup-call {\n")):
+            with self.subTest(rel=rel):
+                text = tree.read(rel)
+                block = text[text.index(head):text.index("\n}\n", text.index(head))]
+                self.assertIn("  --gc-green-text-color: var(--gc-call-green-text-color);\n", block)
+                self.assertIn("  --gc-red-text-color: var(--gc-call-red-text-color);\n", block)
+        self.assertIn("customProperties.getProperty(prefix + colorStr + '-text-color')",
+                      tree.read("src/components/groupCall/index.tsx"))
+        polls = tree.read("src/components/chat/bubbleParts/pollMessageContent/styles.module.scss")
+        self.assertIn("background-color: var(--gc-green-text-color);", polls)
+        self.assertNotIn("gc-call-", polls)
+        self.assertIn("  color: var(--gc-red-text-color);\n", tree.read("src/scss/partials/_markup.scss"))
+        # The plate over a chat.
+        plate = tree.read(patch.CALL_PLATE)
+        self.assertIn("  &.is-unmuted .topbar-call-center {\n    --pc-c1: #5B7A5E;\n", plate)
+        self.assertIn("  &.is-muted-by-admin .topbar-call-center {\n    --pc-c1: #8A5A44;\n", plate)
+        # The buttons keep Telegram's colours: Leave of a group call its red, Accept of a 1:1 call its green;
+        # Decline and End the theme's danger colour, as upstream.
+        self.assertIn("  --gc-button-leave-color: rgba(100, 50, 50, .92);\n", base)
+        self.assertNotIn("rgba(122, 78, 59", base)
+        popup = tree.read(patch.CALL_POPUP)
+        self.assertIn("    &-red {\n      background-color: var(--danger-color) !important;\n    }\n", popup)
+        self.assertIn("    &-green {\n      background-color: #5CC85E !important;\n    }\n", popup)
+        self.assertIn("    &-red {\n      background-color: var(--gc-button-leave-color) !important;\n    }\n",
+                      tree.read("src/scss/partials/popups/_groupCall.scss"))
+        # Every other colour of a call is one of the palette's: what the edits put is sage, the call's other
+        # colours (white, black, greys, the theme's own) are no colour of Telegram's calls.
+        sage = {"3a4a3c", "4f6e52", "2c3a2d", "5b7a5e", "6f8f72", "7fa082", "8a5a44", "a86b4c", "7a4e3b", "b97a55",
+                "9dbb9f"}
+        neutral = {"aaaaaa"}  # the secondary text, a grey of the group call that stays
+        for rel, _, new in patch.CALL_COLOR_EDITS:
+            for r, kept in patch.CALL_BUTTONS + (("src/scss/base.scss", patch.CALL_TEXT_OUTSIDE),):
+                if r == rel:
+                    new = new.replace(kept, "")
+            for color in re.findall(r"#([0-9A-Fa-f]{6})\b|'([0-9a-f]{6}(?:,[0-9a-f]{6})*)'", new):
+                for hex6 in ",".join(filter(None, color)).split(","):
+                    with self.subTest(rel=rel, color=hex6):
+                        self.assertIn(hex6.lower(), sage | neutral)
+
+        sources = {rel: tree.read(rel) for rel in tree.sources()}
+        patch.verify_call_colors(sources)
+        # Telegram's call colours anywhere they could come back stop the check: a colour only calls have, in any
+        # file; one calls share with something else, in a call's file or among the --gc-* colours; an undone edit.
+        for rel, old, new, error in (
+            (patch.CALL_COLORS, "3a4a3c,4f6e52,2c3a2d,5b7a5e", "568fd6,626ed5,a667d5,7664da",
+             "index.tsx: the call is not in the sage palette"),
+            ("src/components/groupCall/videoTile.ts", "\n", "\nconst speaking = '#00CB47';\n",
+             "videoTile.ts: Telegram's call colour '00CB47' is still there"),
+            ("src/scss/partials/popups/_groupCall.scss", "\n", "\n.x { color: rgba(27, 66, 42, .5); }\n",
+             "_groupCall.scss: Telegram's call colour 'rgba(27, 66, 42,' is still there"),
+            ("src/components/call/settingsPopup.scss", "\n", "\n.x { color: #3390EC; }\n",
+             "settingsPopup.scss: Telegram's call colour '3390EC' is still there"),
+            ("src/scss/base.scss", "  --gc-tile-background: #2c2c2e;\n",
+             "  --gc-tile-background: #2c2c2e;\n  --gc-link-color: #3390ec;\n",
+             "base.scss: Telegram's call colour '3390ec' is still there"),
+            ("src/components/wallet/visual/card/background.ts", "\n", "\nconst glow = '#4EABF8';\n",
+             "background.ts: Telegram's call colour '4EABF8' is still there"),
+            # The buttons' colours anywhere but their buttons; a button that lost its colour.
+            ("src/scss/base.scss", "  --gc-tile-background: #2c2c2e;\n",
+             "  --gc-tile-background: #2c2c2e;\n  --gc-alert-color: rgba(100, 50, 50, 1);\n",
+             "base.scss: Telegram's call colour 'rgba(100, 50, 50,' is still there"),
+            (patch.CALL_POPUP, "\n", "\n.x { color: #5CC85E; }\n",
+             "_call.scss: Telegram's call colour '5CC85E' is still there"),
+            ("src/scss/partials/popups/_groupCall.scss", "\n", "\n.x { color: #5cc85e; }\n",
+             "_groupCall.scss: Telegram's call colour '5cc85e' is still there"),
+            ("src/scss/base.scss", "  --gc-button-leave-color: rgba(100, 50, 50, .92);\n",
+             "  --gc-button-leave-color: rgba(122, 78, 59, .92);\n",
+             "base.scss: a call's button does not keep Telegram's colour"),
+            (patch.CALL_POPUP, "#5CC85E !important", "#9DBB9F !important",
+             "_call.scss: a call's button does not keep Telegram's colour"),
+            # The state texts recoloured outside the call's screens: at the root, as polls and the markup read them;
+            # set again elsewhere; the sage ones read by polls.
+            ("src/scss/base.scss", "  --gc-green-text-color: #5CC85E;\n", "  --gc-green-text-color: #9DBB9F;\n",
+             "base.scss: the root's --gc-*-text-color, which polls and the markup read, do not keep Telegram's"),
+            ("src/scss/base.scss", "  --gc-tile-background: #2c2c2e;\n",
+             "  --gc-tile-background: #2c2c2e;\n  --gc-red-text-color: var(--gc-call-red-text-color);\n",
+             "base.scss: the call's state texts are set or read outside a call's screen"),
+            ("src/components/chat/bubbleParts/pollMessageContent/styles.module.scss",
+             "background-color: var(--gc-green-text-color);", "background-color: var(--gc-call-green-text-color);",
+             "styles.module.scss: the call's state texts are set or read outside a call's screen"),
+            ("src/scss/partials/_markup.scss", ".markup-diff-delete {\n",
+             ".markup-diff-delete {\n  --gc-red-text-color: #B97A55;\n",
+             "_markup.scss: the call's state texts are set or read outside a call's screen"),
+        ):
+            with self.subTest(error=error):
+                self.assertIn(old, sources[rel])
+                changed = dict(sources, **{rel: sources[rel].replace(old, new, 1)})
+                with self.assertRaisesRegex(patch.PatchError, re.escape(error)):
+                    patch.verify_call_colors(changed)
+        # A colour shared with the rest of the client stays where it means something else.
+        rel = "src/components/wallet/wallet.module.scss"
+        self.assertIn("3390ec", sources[rel].lower())
+        patch.verify_call_colors(sources)
 
     def test_transcription(self):
         tree, c = self.run_patch()

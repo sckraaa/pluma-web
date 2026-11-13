@@ -1840,6 +1840,8 @@ def patch(tree, c):
     no_ai_editor(tree)
     service_account(tree)
     transcription(tree)
+    e2e_group_calls(tree)
+    call_colors(tree)
 
     # Telegram's site off the screens a user reaches.
     for rel, old, new in TELEGRAM_SITE_EDITS:
@@ -1967,6 +1969,8 @@ def verify(tree, c):
     verify_no_ai_editor(sources)
     verify_service_account(sources)
     verify_transcription(sources)
+    verify_e2e_group_calls(sources)
+    verify_call_colors(sources)
 
     # Links: pluma.chat is a link host of the app, its exact host only, and
     # no Telegram link host is left but the ones LINK_KEEP knows.
@@ -2298,6 +2302,1533 @@ def verify_transcription(sources):
     if order != sorted(order) or order[-1] > min(bubbles.find(TRANSCRIBE_VOICE), bubbles.find(TRANSCRIBE_ROUND)):
         raise PatchError(f"{BUBBLES}: a service line is wrapped as a voice or round message, "
                          "so a view-once one would offer its transcription")
+
+
+# --- end-to-end group calls (task 094) ---------------------------------------------
+#
+# ADR 0060 of the server (the owner's decisions of 2026-11-12): every group call is end-to-end, a chat's and a
+# channel's video chat too, not only a conference; nobody joins one as a channel; there are no RTMP streams;
+# a browser that cannot encrypt frames does not open a group call; the client reports the state of its
+# encryption to the SFU.
+#
+# Web K has the whole end-to-end path of a conference (lib/calls/e2e, a port of tde2e): a key born in the
+# encryption worker, the chain's last block, a block that adds us (phone.joinGroupCall with public_key and
+# block), the chain's polling and pushes, the emoji, the only_left removal of members who left, and the frame
+# transforms (RTCRtpScriptTransform). Which path a call takes was decided by how it was joined, not by the
+# server: a chat's video chat went the legacy way (GroupCallsController.joinGroupCall ->
+# joinGroupCallInternal, no key), a conference the end-to-end one (joinConference -> joinConferenceCommon ->
+# GroupCallInstance.attachE2e). Now a chat's call goes the end-to-end way, by its inputGroupCall(id,
+# access_hash) and with its chat, and keeps the interface of a chat's call: GroupCallInstance.isConference,
+# which the interface and the simulcast asked, is split into isE2e (the crypto: transport recovery, the
+# conference's blackhole probe, joining as someone else) and isConference (an end-to-end call without a chat:
+# no admins, its own link, no speaker invites). The places that asked `instance.e2e` for the interface of a
+# conference (invites, the link, the settings, removing a participant, the question on leaving it for another
+# call) ask isConference; the emoji badge and the members with access keep asking `e2e`, so a chat's call shows
+# them as a conference does.
+#
+# Joining as a channel is gone: a chain member is a user (a block adds a user_id), so the account is who
+# joins. chooseGroupCallJoinAs asks nobody and the call's settings offer no "Display me as..."; the server
+# answers phone.getGroupCallJoinAs with the user alone and refuses another join_as anyway.
+#
+# A browser without RTCRtpScriptTransform (environment/conferenceCallSupport.ts) cannot encrypt frames: the
+# ways into a chat's call (AppImManager.joinGroupCall, joinCallFromLink) tell it so with the string a
+# conference has for it (ConferenceCall.Unsupported) and join or start nothing. A transform that cannot be
+# attached already ends the call (GroupCallInstance.failE2eTransform).
+#
+# RTMP streams: their parts come from the server unencrypted. IS_LIVE_STREAM_SUPPORTED, upstream's own switch
+# for a browser that cannot play them, is off: no "Stream With..." in the chat's menu (topbar.ts), no live
+# plate (topbarPlates.ts), no stream action in a profile (peerProfile.tsx), no RTMP player set up
+# (appDialogsManager.ts). What could still lead to one, a link and the list of active calls, finds
+# joinLiveStream refusing, and the player is opened by nothing. Web K has no live stories: stories.startLive
+# and messageMediaVideoStream are in its schema only.
+#
+# Recording: the server does not serve phone.toggleGroupCallRecord (ADR 0060 §4). A chat's call in Web K has no
+# recording entry; the RTMP player's menu had the only ones ("Start Recording", "Stop Recording"), and they go.
+#
+# The status report, PlumaE2EStatus v1 of ADR 0060 §5, the same for every Pluma client: every 5 s, by its own
+# timer and the first 5 s after the join, the main connection sends it over its data channel while that is open,
+# exactly these fields: colibriClass, v (1), seq (from 1 for each join), height and lastBlock (the hash prefix of
+# the block at that height; tde2e's block hash is over the local form, which is how the server keeps a block),
+# offset0 and offset1 (the cursors the sub-chains are polled from), error (the tde2e code of a sticky failure),
+# sendEpochs, decryptEpochs, unknownEpochs, encrypted, encryptFailed and the senders (user, ok, unknownEpoch,
+# tooOld, duplicate, failed, lastOkMs) by user. The frame counters and the two epoch lists are what happened
+# since the last report: the worker, where the frames are, starts them again when a report takes them. The
+# lists are bounded (15, 15, 8, 100 senders) and the JSON to 16 KiB, past which the senders decrypted longest
+# ago go. No key, nonce, emoji or frame goes in.
+#
+# Self-healing, ADR 0060 §5: a joined call rejoins with a new key when (1) tde2e fails for good (upstream left the
+# call, groupCallInstance.ts callFailed), (2) its sub-chain 0 stays behind the server's next_offset with no block
+# applied for more than 12 s, (3) a request meets GROUPCALL_FORBIDDEN (upstream already rejoins), (4) for 15 s
+# frames came from senders and none decrypted while its chain is current. Those rejoins wait 0, 2 and 5 s and up
+# to 1 s more at random, and the fourth within 5 minutes leaves the call with PlumaCall.EncryptionFailed
+# (GroupCallsController.recoverConference). The rejoins of a failed transport stay as upstream has them and count
+# for nothing; so do the retries of a join that met CONF_WRITE_CHAIN_INVALID, which are part of that join.
+#
+# Those retries, ADR 0060 §5 (as of 2026-11-13): upstream reads the last block again and joins on it, 5 attempts
+# at most (groupCallConnectionInstance.ts:385, 408), which drops members of a herd that joins again at once after
+# a restart of the SFU, each a block on the same height and one a round through. A refusal counts toward 10 in a
+# row only when the last block read after it is the one the refused block was built on; while the chain moves
+# the join goes on, for 100 attempts at most.
+
+GROUP_CALLS = "src/lib/calls/groupCallsController.ts"
+GROUP_CALL = "src/lib/calls/groupCallInstance.ts"
+GROUP_CALL_CONNECTION = "src/lib/calls/groupCallConnectionInstance.ts"
+E2E_CALL = "src/lib/calls/e2e/call.ts"
+E2E_BLOCKCHAIN = "src/lib/calls/e2e/blockchain.ts"
+E2E_WORKER = "src/lib/calls/e2e/encrypt.worker.ts"
+E2E_PROTOCOL = "src/lib/calls/e2e/encryptWorkerProtocol.ts"
+E2E_HOST = "src/lib/calls/e2e/encryptWorkerHost.ts"
+IM_MANAGER = "src/lib/appImManager.ts"
+JOIN_AS = "src/components/groupCall/joinAs.ts"
+CALL_SETTINGS = "src/components/call/settingsPopup.tsx"
+GROUP_CALL_POPUP = "src/components/groupCall/index.tsx"
+GROUP_CALL_PARTICIPANTS = "src/components/groupCall/participants.ts"
+SHARE_INVITE = "src/components/call/shareInviteLink.ts"
+LIVE_STREAM_SUPPORT = "src/environment/liveStreamSupport.ts"
+CONFERENCE_SUPPORT = "src/environment/conferenceCallSupport.ts"
+RTMP_VIEWER = "src/components/mediaViewer/rtmp.ts"
+
+_ADR = "(ADR 0060 of the server)"
+
+E2E_GROUP_CALL_EDITS = (
+    # A chat's call takes the end-to-end path, by its id and access hash, with its chat and its speaker invite.
+    (GROUP_CALLS,
+     "import {\n  findGroupCallChainUpdate\n} from '@lib/calls/helpers/groupCallUpdates';\n",
+     "import {\n  findGroupCallChainUpdate,\n  groupCallToInput\n} from '@lib/calls/helpers/groupCallUpdates';\n"),
+    (GROUP_CALLS,
+     "  account?: CallAccount;\n};\ntype ConferenceStartOptions = {\n",
+     "  account?: CallAccount;\n"
+     "  /** pluma: the speaker invite of a chat's call it is joined by (phone.joinGroupCall `invite_hash`). */\n"
+     "  inviteHash?: string;\n"
+     "};\ntype ConferenceStartOptions = {\n"),
+    (GROUP_CALLS,
+     "    const streamManager = await createMainStreamManager(muted, joinVideo);\n"
+     "    return this.joinGroupCallInternal(chatId, groupCallId, streamManager, muted, joinVideo, account, joinAs, inviteHash)\n"
+     "    .then(() => {\n"
+     "      // have to refresh participants because of the new connection\n"
+     "      const {currentGroupCall} = this;\n"
+     "      if(!currentGroupCall) return;\n"
+     "      // The transport join is already accepted. Initial roster hydration is\n"
+     "      // best-effort and will be refreshed by later participant updates, but\n"
+     "      // the worker-proxy rejection still needs an observer.\n"
+     "      this.replayCachedParticipants(currentGroupCall, 'initial group call participant hydration failed');\n"
+     "    });\n"
+     "  }\n",
+     f"    // pluma: every group call is end-to-end {_ADR}. A chat's video chat is joined the way a\n"
+     "    // conference is: a key of its own, born in the encryption worker, a block that adds us to the call's\n"
+     "    // chain (`public_key` and `block` of phone.joinGroupCall), every frame encrypted; it keeps the interface\n"
+     "    // of a chat's call (GroupCallInstance.isConference). A chain member is a user, so the account joins:\n"
+     "    // `joinAs` is the account (chooseGroupCallJoinAs) and is not sent.\n"
+     "    const groupCall = await account.managers.appGroupCallsManager.getGroupCallFull(groupCallId);\n"
+     "    if(groupCall?._ !== 'groupCall') {\n"
+     "      throw new Error('The group call is over');\n"
+     "    }\n"
+     "\n"
+     "    await this.joinConference({\n"
+     "      input: groupCallToInput(groupCall),\n"
+     "      selfUserId: BigInt(account.myId),\n"
+     "      chatId,\n"
+     "      muted,\n"
+     "      joinVideo,\n"
+     "      account,\n"
+     "      inviteHash\n"
+     "    });\n"
+     "  }\n"),
+    (GROUP_CALLS,
+     "    return instance.isConference ?\n      this.recoverConference(instance, reason) :\n",
+     f"    // pluma: an end-to-end call, a chat's too, is joined again with a new key {_ADR}\n"
+     "    return instance.isE2e ?\n      this.recoverConference(instance, reason) :\n"),
+    (GROUP_CALLS,
+     "    if(instance.isConference) {\n      throw new Error('A conference is joined as the account only');\n    }\n",
+     f"    // pluma: a chain member is a user: every group call is joined as the account {_ADR}\n"
+     "    if(instance.isE2e) {\n      throw new Error('An end-to-end call is joined as the account only');\n    }\n"),
+    (GROUP_CALLS,
+     "    instance.inviteHash = inviteHash;\n"
+     "    // * only a rejoin under way now that goes out with it does instead\n"
+     "    const isRejoining = this.groupCallRejoins.has(instance);\n"
+     "    await this.rejoinUnlessJoined(instance, (options) => isRejoining && options.inviteHash === inviteHash, 'invite-hash');\n",
+     "    instance.inviteHash = inviteHash;\n"
+     f"    // pluma: a chat's call is end-to-end {_ADR}: it is joined again the way a conference is\n"
+     "    // rebuilt, with a new key, and the invite goes with that join (recoverConference).\n"
+     "    await this.recoverConference(instance, 'invite-hash');\n"),
+    (GROUP_CALLS,
+     "    if(!call || !this.currentGroupCall.e2e) {\n",
+     "    if(!call || !this.currentGroupCall.isConference) {\n"),
+    (GROUP_CALLS,
+     "        outboundMediaRecoveryUsed: opts.outboundMediaRecoveryUsed,\n        account: opts.account\n      });\n",
+     "        outboundMediaRecoveryUsed: opts.outboundMediaRecoveryUsed,\n        account: opts.account,\n"
+     "        inviteHash: opts.inviteHash\n      });\n"),
+    (GROUP_CALLS,
+     "    commitRebuiltBlock?: () => Promise<void>;\n    account: CallAccount;\n  }): Promise<GroupCallInstance> {\n",
+     "    commitRebuiltBlock?: () => Promise<void>;\n    account: CallAccount;\n"
+     "    // pluma: the speaker invite of a chat's call (phone.joinGroupCall `invite_hash`)\n"
+     "    inviteHash?: string;\n  }): Promise<GroupCallInstance> {\n"),
+    (GROUP_CALLS,
+     "      instance = createdInstance;\n",
+     "      instance = createdInstance;\n      createdInstance.inviteHash = opts.inviteHash;\n"),
+    (GROUP_CALLS,
+     "          isMuted: opts.muted ?? true,\n          joinVideo: opts.joinVideo,\n          rejoin: false,\n",
+     "          isMuted: opts.muted ?? true,\n          joinVideo: opts.joinVideo,\n          rejoin: false,\n"
+     "          inviteHash: opts.inviteHash,\n"),
+    (GROUP_CALLS,
+     "        if(this.currentGroupCall === instance && state === GROUP_CALL_STATE.CLOSED) {\n"
+     "          this.setCurrentGroupCall(null);\n"
+     "          this.stopConnectingSound();\n"
+     "          if(joinedSuccessfully && !this.recoveringConferences.has(instance)) {\n",
+     "        if(this.currentGroupCall === instance && state === GROUP_CALL_STATE.CLOSED) {\n"
+     "          this.setCurrentGroupCall(null);\n"
+     "          this.stopConnectingSound();\n"
+     "          // pluma: a chat's call, as its legacy join did: the chat's call buttons see it gone\n"
+     "          if(instance.chatId) rootScope.dispatchEvent('chat_update', instance.chatId);\n"
+     "          if(joinedSuccessfully && !this.recoveringConferences.has(instance)) {\n"),
+    (GROUP_CALLS,
+     "    const isConference = instance.isConference;\n    let stopped = false;\n",
+     f"    // pluma: the transport of an end-to-end call, a chat's too {_ADR}\n"
+     "    const isE2e = instance.isE2e;\n    let stopped = false;\n"),
+    (GROUP_CALLS,
+     "    if(IS_CHROMIUM && isConference) {\n",
+     "    if(IS_CHROMIUM && isE2e) {\n"),
+    (GROUP_CALLS,
+     "          account: getCallAccountOf(instance)\n        });\n",
+     "          account: getCallAccountOf(instance),\n          inviteHash: instance.inviteHash\n        });\n"),
+    # The crypto and the interface asked one getter; now each asks its own.
+    (GROUP_CALL,
+     "  public get isConference(): boolean {\n    return !!this.e2e || this.selfUserId !== undefined;\n  }\n",
+     f"  // pluma: end-to-end, the crypto of a conference: every group call, a chat's video chat too\n"
+     f"  // {_ADR}. The transport, its recovery and joining as someone else ask this.\n"
+     "  public get isE2e(): boolean {\n    return !!this.e2e || this.selfUserId !== undefined;\n  }\n"
+     "\n"
+     "  // pluma: a conference, the end-to-end call no chat stands behind (its creator runs it, it has its own\n"
+     "  // link and no speaker invites): what the interface asks. A chat's video chat keeps a chat call's.\n"
+     "  public get isConference(): boolean {\n"
+     "    return this.isE2e && (!this.chatId || this.chatId === NULL_PEER_ID);\n"
+     "  }\n"
+     "\n"
+     "  // pluma: the state of the call's encryption for the SFU (PlumaE2EStatus v1, ADR 0060 §5 of the server) once\n"
+     "  // the chain is open: the worker's part, which it starts again once taken, and the cursors this instance\n"
+     "  // polls the two sub-chains from.\n"
+     "  public async takeE2eStatusReport(): Promise<E2eStatusReportFields | undefined> {\n"
+     "    if(!this.e2e || !this.e2eActive || this.e2eActivating) return;\n"
+     "    const report = await this.e2e.takeE2eReport();\n"
+     "    return {...report, offset0: this.e2eChainOffsets[0], offset1: this.e2eChainOffsets[1]};\n"
+     "  }\n"
+     "\n"
+     "  // pluma: rules 2 and 4 of the self-healing (ADR 0060 §5 of the server); rule 1 is the worker's callFailed,\n"
+     "  // rule 3 GROUPCALL_FORBIDDEN (requestConferenceRecoveryForForbidden), and the controller bounds the rejoins\n"
+     "  // they ask for. Rule 2: the server's sub-chain 0 is ahead of what this client applied and no block applies,\n"
+     "  // for E2E_CHAIN_BEHIND_MS. Rule 4: for as long as the worker's E2E_DECRYPT_STALL_MS, frames came from\n"
+     "  // senders and not one of them decrypted, while this client's chain is current: the fault is this client's.\n"
+     "  // One sender that fails while others decrypt is that sender's, caught by its own rules.\n"
+     "  private async checkE2eSelfHealing(): Promise<void> {\n"
+     "    if(!this.e2e || !this.e2eActive || this.e2eActivating || this.conferenceRecoveryDispatched ||\n"
+     "       this.checkingE2eSelfHealing) {\n"
+     "      return;\n"
+     "    }\n"
+     "\n"
+     "    const now = performance.now();\n"
+     "    if(this.e2eServerChainOffset0 > this.e2eChainOffsets[0]) {\n"
+     "      this.e2eChainBehindSince ??= now;\n"
+     "      if(now - this.e2eChainBehindSince > E2E_CHAIN_BEHIND_MS) {\n"
+     "        this.requestConferenceRecovery('chain-behind');\n"
+     "      }\n"
+     "      return;\n"
+     "    }\n"
+     "\n"
+     "    this.e2eChainBehindSince = undefined;\n"
+     "    this.checkingE2eSelfHealing = true;\n"
+     "    try {\n"
+     "      const stalled = await this.e2e.isDecryptStalled();\n"
+     "      if(stalled && this.e2eActive && !this.conferenceRecoveryDispatched &&\n"
+     "         this.e2eServerChainOffset0 <= this.e2eChainOffsets[0]) {\n"
+     "        this.requestConferenceRecovery('decrypt-stalled');\n"
+     "      }\n"
+     "    } catch(err) {\n"
+     "      this.log.warn('e2e self-healing check failed', err);\n"
+     "    } finally {\n"
+     "      this.checkingE2eSelfHealing = false;\n"
+     "    }\n"
+     "  }\n"),
+    (GROUP_CALL,
+     "import type {CallStatusSnapshot} from '@lib/calls/e2e/encryptWorkerProtocol';\n",
+     "import type {CallStatusSnapshot, E2eStatusReportFields} from '@lib/calls/e2e/encryptWorkerProtocol';\n"),
+    # Self-healing: a failure of the encryption rejoins instead of leaving, and the instance watches its chain and
+    # its decryption.
+    (GROUP_CALL,
+     "const E2E_CHAIN_POLL_INTERVAL_MS = 1500;\n",
+     "const E2E_CHAIN_POLL_INTERVAL_MS = 1500;\n"
+     "// pluma: the self-healing of an end-to-end call (ADR 0060 §5 of the server): how often rules 2 and 4 are\n"
+     "// checked, and how long this client's sub-chain 0 may stay behind the server's while no block applies (the\n"
+     "// 10 s an old epoch stays usable, tde2e FORGET_EPOCH_DELAY of Call.h, and a margin)\n"
+     "const E2E_SELF_HEALING_CHECK_MS = 1000;\n"
+     "const E2E_CHAIN_BEHIND_MS = 12000;\n"),
+    (GROUP_CALL,
+     "  private e2eChainOffsets: {0: number; 1: number} = {0: 0, 1: 0};\n",
+     "  private e2eChainOffsets: {0: number; 1: number} = {0: 0, 1: 0};\n"
+     "  // pluma: the farthest next_offset of sub-chain 0 the server announced, since when this client has been behind\n"
+     "  // it with no block applied, and the timer of rules 2 and 4 of the self-healing (checkE2eSelfHealing)\n"
+     "  private e2eServerChainOffset0 = 0;\n"
+     "  private e2eChainBehindSince: number | undefined;\n"
+     "  private e2eSelfHealingInterval: ReturnType<typeof setInterval> | undefined;\n"
+     "  private checkingE2eSelfHealing = false;\n"),
+    (GROUP_CALL,
+     "    if(!this.isValidE2eChainBatch(subChainId, blocks, nextOffset, requestedOffset)) {\n"
+     "      return Promise.resolve(false);\n"
+     "    }\n"
+     "\n"
+     "    const firstOffset = nextOffset - blocks.length;\n"
+     "    if(subChainId === 1 && requestedOffset === 0 && this.e2eChainOffsets[1] === 0 && firstOffset > 0) {\n",
+     "    if(!this.isValidE2eChainBatch(subChainId, blocks, nextOffset, requestedOffset)) {\n"
+     "      return Promise.resolve(false);\n"
+     "    }\n"
+     "\n"
+     "    // pluma: how far the server's sub-chain 0 goes, for rule 2 of the self-healing (checkE2eSelfHealing)\n"
+     "    if(subChainId === 0 && nextOffset > this.e2eServerChainOffset0) {\n"
+     "      this.e2eServerChainOffset0 = nextOffset;\n"
+     "    }\n"
+     "\n"
+     "    const firstOffset = nextOffset - blocks.length;\n"
+     "    if(subChainId === 1 && requestedOffset === 0 && this.e2eChainOffsets[1] === 0 && firstOffset > 0) {\n"),
+    (GROUP_CALL,
+     "      pending.delete(offset);\n      this.e2eChainOffsets[subChainId] = offset + 1;\n    }\n  }\n",
+     "      pending.delete(offset);\n      this.e2eChainOffsets[subChainId] = offset + 1;\n"
+     "      // pluma: a block applied, so this client is not stuck behind the server (rule 2 of the self-healing)\n"
+     "      if(subChainId === 0) this.e2eChainBehindSince = undefined;\n"
+     "    }\n  }\n"),
+    (GROUP_CALL,
+     "    // Watchdog: detect + self-heal a silent poller stall (see field comment).\n"
+     "    if(!this.e2eWatchdogInterval) {\n"
+     "      this.e2eWatchdogInterval = setInterval(() => {\n"
+     "        this.e2eWatchdogTick();\n"
+     "      }, E2E_WATCHDOG_INTERVAL_MS);\n"
+     "    }\n"
+     "  }\n",
+     "    // Watchdog: detect + self-heal a silent poller stall (see field comment).\n"
+     "    if(!this.e2eWatchdogInterval) {\n"
+     "      this.e2eWatchdogInterval = setInterval(() => {\n"
+     "        this.e2eWatchdogTick();\n"
+     "      }, E2E_WATCHDOG_INTERVAL_MS);\n"
+     "    }\n"
+     "\n"
+     f"    // pluma: rules 2 and 4 of the self-healing {_ADR}\n"
+     "    if(!this.e2eSelfHealingInterval) {\n"
+     "      this.e2eChainBehindSince = undefined;\n"
+     "      this.e2eSelfHealingInterval = setInterval(() => {\n"
+     "        void this.checkE2eSelfHealing();\n"
+     "      }, E2E_SELF_HEALING_CHECK_MS);\n"
+     "    }\n"
+     "  }\n"),
+    (GROUP_CALL,
+     "    if(this.e2eWatchdogInterval) {\n"
+     "      clearInterval(this.e2eWatchdogInterval);\n"
+     "      this.e2eWatchdogInterval = undefined;\n"
+     "    }\n"
+     "  }\n",
+     "    if(this.e2eWatchdogInterval) {\n"
+     "      clearInterval(this.e2eWatchdogInterval);\n"
+     "      this.e2eWatchdogInterval = undefined;\n"
+     "    }\n"
+     "    if(this.e2eSelfHealingInterval) {\n"
+     "      clearInterval(this.e2eSelfHealingInterval);\n"
+     "      this.e2eSelfHealingInterval = undefined;\n"
+     "    }\n"
+     "  }\n"),
+    (GROUP_CALL,
+     "      this.log.error('e2e: callFailed — leaving; reason:', message);\n"
+     "      this.e2eFatalError ??= new Error(message);\n"
+     "      // Leave, do NOT discard. `hangUp(true)` routes to phone.discardGroupCall,\n"
+     "      // which ends the conference for EVERY participant — so one client failing\n"
+     "      // to apply a block used to tear down everyone else's call. Our e2e state\n"
+     "      // being unusable is a statement about this client only; the others may be\n"
+     "      // perfectly healthy, and if they are not, they will each decide that for\n"
+     "      // themselves.\n"
+     "      // Before/during activation the join transaction owns rollback. Let\n"
+     "      // activateE2e reject into it instead of racing it with a second leave.\n"
+     "      if(this.e2eActive && !this.e2eActivating) this.hangUpAfterFatalFailure();\n"
+     "    });\n",
+     "      // pluma: any other sticky tde2e failure of a joined call is rule 1 of the self-healing (ADR 0060 §5 of\n"
+     "      // the server): a full rejoin with a new key, as tdesktop answers every tde2e failure (\"TdE2E: Got\n"
+     "      // failure, scheduling rejoin!\", calls_group_call.cpp:787-790), never discarding the call for everyone.\n"
+     "      // The controller bounds the rejoins and leaves with a message past them.\n"
+     "      if(this.e2eActive && !this.e2eActivating) {\n"
+     "        this.log.warn('e2e: callFailed — requesting full rejoin', message);\n"
+     "        this.requestConferenceRecovery('e2e-failure');\n"
+     "        return;\n"
+     "      }\n"
+     "\n"
+     "      // Before/during activation the join transaction owns rollback. Let\n"
+     "      // activateE2e reject into it instead of racing it with a leave.\n"
+     "      this.log.error('e2e: callFailed before activation; reason:', message);\n"
+     "      this.e2eFatalError ??= new Error(message);\n"
+     "    });\n"),
+    # The controller bounds the rejoins the encryption asks for.
+    (GROUP_CALLS,
+     "const OUTBOUND_MEDIA_BLACKHOLE_REASON = 'outbound-media-blackhole';\n",
+     "const OUTBOUND_MEDIA_BLACKHOLE_REASON = 'outbound-media-blackhole';\n"
+     "// pluma: the rejoins of the self-healing of an end-to-end call (ADR 0060 §5 of the server): at most\n"
+     "// E2E_REJOINS_LIMIT in a rolling E2E_REJOINS_PERIOD_MS, then the call is left with a message; before each, the\n"
+     "// delay of its place in that window and a random part. Every rejoin changes the key for everyone, and\n"
+     "// members rejoining at once collide in CONF_WRITE_CHAIN_INVALID. Only the encryption's reasons count: a\n"
+     "// failed transport, an SSRC clash or a speaker link rejoin as they did, and the retries of a join that met\n"
+     "// CONF_WRITE_CHAIN_INVALID are part of that join (GroupCallConnectionInstance).\n"
+     "const E2E_REJOINS_LIMIT = 3;\n"
+     "const E2E_REJOINS_PERIOD_MS = 5 * 60 * 1000;\n"
+     "const E2E_REJOIN_DELAYS_MS = [0, 2000, 5000];\n"
+     "const E2E_REJOIN_JITTER_MS = 1000;\n"
+     "// What GroupCallInstance asks a rejoin for when its encryption fails: a sticky tde2e error (`e2e-failure`,\n"
+     "// `membership-lost`), its chain behind the server's (`chain-behind`), GROUPCALL_FORBIDDEN on any of its\n"
+     "// requests (`*-forbidden`), nothing decrypted from anybody (`decrypt-stalled`).\n"
+     "const isE2eRejoinReason = (reason: string) => reason === 'e2e-failure' || reason === 'membership-lost' ||\n"
+     "  reason === 'chain-behind' || reason === 'decrypt-stalled' || reason.endsWith('-forbidden');\n"),
+    (GROUP_CALLS,
+     "  private recoveringConferences = new WeakSet<GroupCallInstance>();\n",
+     "  private recoveringConferences = new WeakSet<GroupCallInstance>();\n"
+     "  // pluma: when the encryption of each call last asked a rejoin, within E2E_REJOINS_PERIOD_MS\n"
+     "  private e2eRejoins = new Map<GroupCallId, number[]>();\n"),
+    (GROUP_CALLS,
+     "    this.log.warn('rejoining conference', {reason, id: instance.id});\n"
+     "    const promise = (async() => {\n"
+     "      try {\n"
+     "        await instance.hangUp(false, false, true);\n",
+     "    this.log.warn('rejoining conference', {reason, id: instance.id});\n"
+     "    // pluma: a rejoin the encryption asks for waits its delay, and past the limit the call is left\n"
+     "    const e2eRejoinDelay = isE2eRejoinReason(reason) ? this.takeE2eRejoinDelay(instance.id) : 0;\n"
+     "    const promise = (async() => {\n"
+     "      try {\n"
+     "        if(e2eRejoinDelay === undefined) {\n"
+     "          this.log.error('the encryption keeps failing — leaving the call', {reason, id: instance.id});\n"
+     "          await instance.hangUp();\n"
+     "          toastNew({langPackKey: 'PlumaCall.EncryptionFailed'});\n"
+     "          return;\n"
+     "        }\n"
+     "        if(e2eRejoinDelay) {\n"
+     "          await pause(e2eRejoinDelay);\n"
+     "          this.assertConferenceTransition(generation);\n"
+     "          if(this.currentGroupCall !== instance || instance.isClosing) return;\n"
+     "        }\n"
+     "        await instance.hangUp(false, false, true);\n"),
+    (GROUP_CALLS,
+     "  private assertConferenceTransition(generation?: number): void {\n",
+     "  // pluma: the delay before the rejoin the encryption of call `id` asks for now, or undefined when it asked\n"
+     "  // E2E_REJOINS_LIMIT times in the last E2E_REJOINS_PERIOD_MS already (ADR 0060 §5 of the server)\n"
+     "  private takeE2eRejoinDelay(id: GroupCallId): number | undefined {\n"
+     "    const now = performance.now();\n"
+     "    const recent = (this.e2eRejoins.get(id) || []).filter((at) => now - at < E2E_REJOINS_PERIOD_MS);\n"
+     "    if(recent.length >= E2E_REJOINS_LIMIT) {\n"
+     "      this.e2eRejoins.delete(id);\n"
+     "      return;\n"
+     "    }\n"
+     "\n"
+     "    recent.push(now);\n"
+     "    this.e2eRejoins.set(id, recent);\n"
+     "    return E2E_REJOIN_DELAYS_MS[recent.length - 1] + Math.floor(Math.random() * E2E_REJOIN_JITTER_MS);\n"
+     "  }\n"
+     "\n"
+     "  private assertConferenceTransition(generation?: number): void {\n"),
+    ("src/lang.ts",
+     "  'Error.AnError': 'An error occurred. Please try again later.',\n",
+     "  'Error.AnError': 'An error occurred. Please try again later.',\n"
+     "  'PlumaCall.EncryptionFailed': 'The encryption of this call keeps failing, so you left it. Join it again.',\n"),
+    # The report goes over the main connection's data channel.
+    (GROUP_CALL_CONNECTION,
+     "const REMOTE_VIDEO_CONSTRAINTS_REFRESH_MS = 5000;\n",
+     "const REMOTE_VIDEO_CONSTRAINTS_REFRESH_MS = 5000;\n"
+     "// pluma: the status report of the call's encryption (PlumaE2EStatus v1, ADR 0060 §5 of the server): every 5 s\n"
+     "// by its own timer, the first 5 s after the join, at most 16 KiB of JSON\n"
+     "const E2E_STATUS_REPORT_INTERVAL_MS = 5000;\n"
+     "const E2E_STATUS_REPORT_MAX_LENGTH = 16384;\n"
+     "\n"
+     "// pluma: the report as the SFU takes it: these fields and no other, `seq` counting the reports of this join\n"
+     "// from 1. Past the size limit the senders decrypted longest ago go first. Every value is a number, a hex\n"
+     "// string or a name, so the length of the JSON is its size in bytes.\n"
+     "function serializeE2eStatusReport(seq: number, report: E2eStatusReportFields): string {\n"
+     "  const senders = report.senders.map(({user, ok, unknownEpoch, tooOld, duplicate, failed, lastOkMs}) => {\n"
+     "    return {user, ok, unknownEpoch, tooOld, duplicate, failed, lastOkMs};\n"
+     "  });\n"
+     "  for(;;) {\n"
+     "    const json = JSON.stringify({\n"
+     "      colibriClass: 'PlumaE2EStatus',\n"
+     "      v: 1,\n"
+     "      seq,\n"
+     "      height: report.height,\n"
+     "      lastBlock: report.lastBlock,\n"
+     "      offset0: report.offset0,\n"
+     "      offset1: report.offset1,\n"
+     "      error: report.error,\n"
+     "      sendEpochs: report.sendEpochs,\n"
+     "      decryptEpochs: report.decryptEpochs,\n"
+     "      unknownEpochs: report.unknownEpochs,\n"
+     "      encrypted: report.encrypted,\n"
+     "      encryptFailed: report.encryptFailed,\n"
+     "      senders\n"
+     "    });\n"
+     "    if(json.length <= E2E_STATUS_REPORT_MAX_LENGTH || !senders.length) return json;\n"
+     "    let oldest = 0;\n"
+     "    for(let i = 1; i < senders.length; ++i) {\n"
+     "      if(senders[i].lastOkMs > senders[oldest].lastOkMs) oldest = i;\n"
+     "    }\n"
+     "    senders.splice(oldest, 1);\n"
+     "  }\n"
+     "}\n"),
+    (GROUP_CALL_CONNECTION,
+     "import {InputGroupCall} from '@layer';\n",
+     "import {InputGroupCall} from '@layer';\n"
+     "import type {E2eStatusReportFields} from '@lib/calls/e2e/encryptWorkerProtocol';\n"),
+    (GROUP_CALL_CONNECTION,
+     "  private updateConstraintsTimeout: number;\n",
+     "  private updateConstraintsTimeout: number;\n"
+     "  private e2eStatusReportInterval: number;\n"
+     "  private e2eStatusReportSeq = 0;\n"),
+    (GROUP_CALL_CONNECTION,
+     "    dataChannel.addEventListener('open', () => {\n"
+     "      this.maybeUpdateRemoteVideoConstraints();\n"
+     "    });\n"
+     "\n"
+     "    dataChannel.addEventListener('close', () => {\n"
+     "      this.clearUpdateConstraintsInterval();\n"
+     "    });\n",
+     "    dataChannel.addEventListener('open', () => {\n"
+     "      this.maybeUpdateRemoteVideoConstraints();\n"
+     "      this.startE2eStatusReports();\n"
+     "    });\n"
+     "\n"
+     "    dataChannel.addEventListener('close', () => {\n"
+     "      this.clearUpdateConstraintsInterval();\n"
+     "      this.stopE2eStatusReports();\n"
+     "    });\n"),
+    (GROUP_CALL_CONNECTION,
+     "    this.clearUpdateConstraintsInterval();\n    this.senderVideoConstraint.dispose();\n    super.closeConnection();\n",
+     "    this.clearUpdateConstraintsInterval();\n    this.stopE2eStatusReports();\n"
+     "    this.senderVideoConstraint.dispose();\n    super.closeConnection();\n"),
+    (GROUP_CALL_CONNECTION,
+     "  protected onDataChannelMessage(message: Record<string, unknown>) {\n",
+     "  // pluma: the state of the call's end-to-end encryption for the SFU, over the main connection's data channel\n"
+     "  // while it is open (colibriClass \"PlumaE2EStatus\" v1, ADR 0060 §5 of the server): heights, cursors, epochs\n"
+     "  // and counters, never a key, a nonce, the emoji or a frame. The server sees from it whose keys went out of\n"
+     "  // step. A report is taken from the worker only while the channel is open: what is not taken goes in the\n"
+     "  // next one.\n"
+     "  private startE2eStatusReports() {\n"
+     "    if(this.type !== 'main' || !this.groupCall?.e2e || this.e2eStatusReportInterval) {\n"
+     "      return;\n"
+     "    }\n"
+     "\n"
+     "    this.e2eStatusReportInterval = window.setInterval(() => {\n"
+     "      if(this.dataChannel?.readyState !== 'open') return;\n"
+     "      this.groupCall.takeE2eStatusReport().then((report) => {\n"
+     "        if(!report || this.dataChannel?.readyState !== 'open') return;\n"
+     "        this.dataChannel.send(serializeE2eStatusReport(++this.e2eStatusReportSeq, report));\n"
+     "      }).catch((err) => {\n"
+     "        this.log.warn('e2e status report failed', err);\n"
+     "      });\n"
+     "    }, E2E_STATUS_REPORT_INTERVAL_MS);\n"
+     "  }\n"
+     "\n"
+     "  private stopE2eStatusReports() {\n"
+     "    if(this.e2eStatusReportInterval) {\n"
+     "      clearInterval(this.e2eStatusReportInterval);\n"
+     "      this.e2eStatusReportInterval = undefined;\n"
+     "    }\n"
+     "  }\n"
+     "\n"
+     "  protected onDataChannelMessage(message: Record<string, unknown>) {\n"),
+    # The report's requests, its shape, and what the worker counts for it.
+    (E2E_PROTOCOL,
+     "  | {kind: 'getStatus'; id: number}\n",
+     "  | {kind: 'getStatus'; id: number}\n"
+     f"  // pluma: the status report of the encryption and rule 4 of the self-healing {_ADR}\n"
+     "  | {kind: 'takeE2eReport'; id: number}\n"
+     "  | {kind: 'isDecryptStalled'; id: number}\n"),
+    (E2E_PROTOCOL,
+     "export interface OutboundBroadcast {\n",
+     "// pluma: what the client tells the SFU of the call's encryption, over the data channel every 5 s\n"
+     "// (PlumaE2EStatus v1, ADR 0060 §5 of the server; the same for every Pluma client). The frame counters and the\n"
+     "// epoch lists are what happened since the last report; the other fields are current values. Epochs and blocks\n"
+     "// go as the first 8 bytes of their hash in hex, which the server can compute anyway; no key, nonce, emoji or\n"
+     "// frame goes in.\n"
+     "export interface E2eSenderReport {\n"
+     "  // the sender's user_id\n"
+     "  user: number;\n"
+     "  // their frames decrypted, and the ones that were not: the frame names no active epoch of ours (tde2e\n"
+     "  // Decrypt_UnknownEpoch), it is older than the replay window (\"Message is too old\"), it came already\n"
+     "  // (\"Message is already processed\"), anything else\n"
+     "  ok: number;\n"
+     "  unknownEpoch: number;\n"
+     "  tooOld: number;\n"
+     "  duplicate: number;\n"
+     "  failed: number;\n"
+     "  // milliseconds from their last frame decrypted to the report, -1 when none was\n"
+     "  lastOkMs: number;\n"
+     "}\n"
+     "\n"
+     "// The worker's part of the report.\n"
+     "export interface E2eStatusReport {\n"
+     "  // the height of sub-chain 0 applied, -1 without a state (a failed call)\n"
+     "  height: number;\n"
+     "  // the hash of the block at that height, the block as the server keeps it (the local form, its hash is\n"
+     "  // tde2e's own), '' without a state\n"
+     "  lastBlock: string;\n"
+     "  // the tde2e code (e2e_errors.h) of the sticky failure, 0 while the call works\n"
+     "  error: number;\n"
+     "  // the epochs the last frame encrypted names: what this client encrypts with now (at most 15)\n"
+     "  sendEpochs: string[];\n"
+     "  // the epochs named by frames decrypted (at most 15), and by frames failed with Decrypt_UnknownEpoch (the\n"
+     "  // first 8)\n"
+     "  decryptEpochs: string[];\n"
+     "  unknownEpochs: string[];\n"
+     "  // frames of this client's streams encrypted, and not\n"
+     "  encrypted: number;\n"
+     "  encryptFailed: number;\n"
+     "  // the senders a frame came from, by user (at most 100)\n"
+     "  senders: E2eSenderReport[];\n"
+     "}\n"
+     "\n"
+     "// The whole report but its framing: the worker's part and the cursors the two sub-chains are polled from\n"
+     "// (offset1 is the broadcasts' cursor).\n"
+     "export type E2eStatusReportFields = E2eStatusReport & {offset0: number; offset1: number};\n"
+     "\n"
+     "export interface OutboundBroadcast {\n"),
+    (E2E_PROTOCOL,
+     "  getStatus: CallStatusSnapshot;\n",
+     "  getStatus: CallStatusSnapshot;\n  takeE2eReport: E2eStatusReport;\n  isDecryptStalled: boolean;\n"),
+    (E2E_HOST,
+     "  public getStatus(): Promise<RequestResultMap['getStatus']> {\n    return this.invoke('getStatus');\n  }\n",
+     "  public getStatus(): Promise<RequestResultMap['getStatus']> {\n    return this.invoke('getStatus');\n  }\n"
+     "\n"
+     f"  // pluma: the status report of the encryption, which starts its counters again {_ADR}\n"
+     "  public takeE2eReport(): Promise<RequestResultMap['takeE2eReport']> {\n"
+     "    return this.invoke('takeE2eReport');\n"
+     "  }\n"
+     "\n"
+     f"  // pluma: rule 4 of the self-healing {_ADR}\n"
+     "  public isDecryptStalled(): Promise<RequestResultMap['isDecryptStalled']> {\n"
+     "    return this.invoke('isDecryptStalled');\n"
+     "  }\n"),
+    (E2E_HOST,
+     "    args?: K extends 'createKey' | 'pullOutbound' | 'getStatus' | 'commitRejoinBlock' | 'destroy' ?\n",
+     "    args?: K extends 'createKey' | 'pullOutbound' | 'getStatus' | 'takeE2eReport' | 'isDecryptStalled' |\n"
+     "      'commitRejoinBlock' | 'destroy' ?\n"),
+    (E2E_CALL,
+     "  public getLastBlockHash(): Uint8Array {\n    this.checkStatus();\n    return new Uint8Array(this.state.lastBlockHash);\n  }\n",
+     "  public getLastBlockHash(): Uint8Array {\n    this.checkStatus();\n    return new Uint8Array(this.state.lastBlockHash);\n  }\n"
+     "\n"
+     "  // pluma: the hashes of the active epochs, which tell the status report of the encryption a frame that names\n"
+     f"  // none of ours from one whose key of ours failed {_ADR}\n"
+     "  public getEpochHashes(): Uint8Array[] {\n"
+     "    this.checkStatus();\n"
+     "    return this.epochs.map((epoch) => new Uint8Array(epoch.epochHash));\n"
+     "  }\n"),
+    (E2E_WORKER,
+     "import {ensureCryptoReady, randomBytes} from './crypto';\n"
+     "import type {CallStatusSnapshot, HostRequest, HostResponse, WorkerEvent} from './encryptWorkerProtocol';\n",
+     "import {bytesToHex, ensureCryptoReady, randomBytes} from './crypto';\n"
+     "import type {\n"
+     "  CallStatusSnapshot,\n"
+     "  E2eSenderReport,\n"
+     "  E2eStatusReport,\n"
+     "  HostRequest,\n"
+     "  HostResponse,\n"
+     "  WorkerEvent\n"
+     "} from './encryptWorkerProtocol';\n"),
+    (E2E_WORKER,
+     "    case 'getStatus':\n      return snapshot();\n",
+     "    case 'getStatus':\n      return snapshot();\n"
+     "\n"
+     "    case 'takeE2eReport':\n"
+     "      if(!call) throw new Error('takeE2eReport: not initialized');\n"
+     "      return takeE2eReport();\n"
+     "\n"
+     "    case 'isDecryptStalled':\n"
+     "      return isDecryptStalled();\n"),
+    (E2E_WORKER,
+     "      pendingRejoinBlock = undefined;\n      ssrcToUser.clear();\n      return undefined;\n",
+     "      pendingRejoinBlock = undefined;\n      ssrcToUser.clear();\n      resetE2eReport();\n      return undefined;\n"),
+    (E2E_WORKER,
+     "const decryptErrFrames = new Map<number, number>();\n",
+     "const decryptErrFrames = new Map<number, number>();\n"
+     "\n"
+     "// pluma: the counters of the status report (E2eStatusReport, ADR 0060 §5 of the server) of the call this\n"
+     "// worker holds, and what rule 4 of the self-healing reads (isDecryptStalled). The frame counters and the epoch\n"
+     "// lists are since the last report, which takes them; per sender also when a frame of theirs last came, last\n"
+     "// decrypted, and since when theirs fail. Times are performance.now(), as the epochs' own.\n"
+     "const E2E_REPORT_MAX_EPOCHS = 15;\n"
+     "const E2E_REPORT_MAX_UNKNOWN_EPOCHS = 8;\n"
+     "const E2E_REPORT_MAX_SENDERS = 100;\n"
+     "// rule 4 of the self-healing: frames came for this long and none decrypted (Web K's own sync watchdog waits\n"
+     "// as long, E2E_SYNC_STALL_MS of groupCallInstance.ts)\n"
+     "const E2E_DECRYPT_STALL_MS = 15000;\n"
+     "// The tde2e codes (tde2e/td/e2e/e2e_errors.h) of the errors this port fails a call with, by the code its\n"
+     "// BlockchainError (blockchain.ts) and CallError (call.ts) carry; any other is UnknownError.\n"
+     "const TDE2E_ERROR_CODES: {[code: string]: number} = {\n"
+     "  NO_CHANGES: 201,\n"
+     "  INVALID_SIGNATURE: 202,\n"
+     "  PREVIOUS_BLOCK_HASH_MISMATCH: 203,\n"
+     "  HEIGHT_MISMATCH: 204,\n"
+     "  INVALID_STATE_PROOF: 205,\n"
+     "  NO_PERMISSIONS: 207,\n"
+     "  INVALID_GROUP_STATE: 208,\n"
+     "  INVALID_SHARED_KEY: 209,\n"
+     "  NOT_PARTICIPANT: 300,\n"
+     "  WRONG_USER_ID: 301,\n"
+     "  CALL_FAILED: 601\n"
+     "};\n"
+     "const TDE2E_UNKNOWN_ERROR = 100;\n"
+     "type SenderCounters = Omit<E2eSenderReport, 'user' | 'lastOkMs'> & {\n"
+     "  lastFrameAt?: number;\n"
+     "  lastOkAt?: number;\n"
+     "  failingSince?: number;\n"
+     "};\n"
+     "const senderCounters = new Map<bigint, SenderCounters>();\n"
+     "const decryptEpochs = new Set<string>();\n"
+     "const unknownEpochs = new Set<string>();\n"
+     "let sendEpochs: string[] = [];\n"
+     "let encryptedFrames = 0;\n"
+     "let encryptFailedFrames = 0;\n"
+     "\n"
+     "function senderCountersOf(userId: bigint): SenderCounters {\n"
+     "  let counters = senderCounters.get(userId);\n"
+     "  if(!counters) {\n"
+     "    counters = {ok: 0, unknownEpoch: 0, tooOld: 0, duplicate: 0, failed: 0};\n"
+     "    senderCounters.set(userId, counters);\n"
+     "  }\n"
+     "  return counters;\n"
+     "}\n"
+     "\n"
+     "// The first 8 bytes of the epoch hashes a frame names in its header_a, read the way decryptPacket (call.ts)\n"
+     "// reads them: the length of the unencrypted prefix in the last 4 bytes, after the prefix the head with the\n"
+     "// number of epochs in its low byte, then a 32-byte hash per epoch.\n"
+     "function frameEpochHashPrefixes(packet: Uint8Array): string[] {\n"
+     "  if(packet.length < 8) return [];\n"
+     "  const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);\n"
+     "  const bodyEnd = packet.length - 4;\n"
+     "  const prefixLength = view.getUint32(bodyEnd, true);\n"
+     "  if(prefixLength > bodyEnd - 4) return [];\n"
+     "  const epochsN = view.getUint32(prefixLength, true) & 0xff;\n"
+     "  const prefixes: string[] = [];\n"
+     "  for(let i = 0, offset = prefixLength + 4; i < epochsN && offset + 32 <= bodyEnd; ++i, offset += 32) {\n"
+     "    prefixes.push(view.getUint32(offset).toString(16).padStart(8, '0') +\n"
+     "      view.getUint32(offset + 4).toString(16).padStart(8, '0'));\n"
+     "  }\n"
+     "  return prefixes;\n"
+     "}\n"
+     "\n"
+     "function addEpochs(epochs: Set<string>, prefixes: string[], limit: number): void {\n"
+     "  for(const prefix of prefixes) {\n"
+     "    if(epochs.size >= limit) return;\n"
+     "    epochs.add(prefix);\n"
+     "  }\n"
+     "}\n"
+     "\n"
+     "// The hash prefixes of our active epochs; none once the call is gone or failed.\n"
+     "function ownEpochHashPrefixes(): Set<string> {\n"
+     "  try {\n"
+     "    return new Set((call?.getEpochHashes() ?? []).map((hash) => bytesToHex(hash.subarray(0, 8))));\n"
+     "  } catch{\n"
+     "    return new Set();\n"
+     "  }\n"
+     "}\n"
+     "\n"
+     "function countEncrypted(encrypted: Uint8Array | undefined): void {\n"
+     "  if(!encrypted) {\n"
+     "    ++encryptFailedFrames;\n"
+     "    return;\n"
+     "  }\n"
+     "\n"
+     "  ++encryptedFrames;\n"
+     "  const prefixes = frameEpochHashPrefixes(encrypted);\n"
+     "  if(prefixes.length !== sendEpochs.length || prefixes.some((prefix, i) => prefix !== sendEpochs[i])) {\n"
+     "    sendEpochs = prefixes.slice(0, E2E_REPORT_MAX_EPOCHS);\n"
+     "  }\n"
+     "}\n"
+     "\n"
+     "function countDecrypted(fromUserId: bigint, packet: Uint8Array): void {\n"
+     "  const counters = senderCountersOf(fromUserId);\n"
+     "  ++counters.ok;\n"
+     "  counters.lastFrameAt = counters.lastOkAt = performance.now();\n"
+     "  counters.failingSince = undefined;\n"
+     "  addEpochs(decryptEpochs, frameEpochHashPrefixes(packet), E2E_REPORT_MAX_EPOCHS);\n"
+     "}\n"
+     "\n"
+     "// By the words of decryptPacket and ReplayState.checkAndMark (call.ts). decryptPacket says \"no matching active\n"
+     "// epoch\" also when a frame names an epoch of ours whose key does not open its header; tde2e fails that one on\n"
+     "// the key (Call::decrypt, Decrypt_UnknownEpoch only when no epoch matched), and so does the report.\n"
+     "function countDecryptError(fromUserId: bigint, err: unknown, packet: Uint8Array): void {\n"
+     "  const counters = senderCountersOf(fromUserId);\n"
+     "  const now = counters.lastFrameAt = performance.now();\n"
+     "  const message = (err as Error)?.message || '';\n"
+     "  if(/^replay: seqno \\d+ older than window /.test(message)) {\n"
+     "    ++counters.tooOld;\n"
+     "    return;\n"
+     "  }\n"
+     "  if(/^replay: seqno \\d+ already seen$/.test(message)) {\n"
+     "    ++counters.duplicate;\n"
+     "    return;\n"
+     "  }\n"
+     "\n"
+     "  counters.failingSince ??= now;\n"
+     "  if(message === 'decryptPacket: no matching active epoch') {\n"
+     "    const named = frameEpochHashPrefixes(packet);\n"
+     "    const own = ownEpochHashPrefixes();\n"
+     "    if(!named.some((prefix) => own.has(prefix))) {\n"
+     "      ++counters.unknownEpoch;\n"
+     "      addEpochs(unknownEpochs, named, E2E_REPORT_MAX_UNKNOWN_EPOCHS);\n"
+     "      return;\n"
+     "    }\n"
+     "  }\n"
+     "  ++counters.failed;\n"
+     "}\n"
+     "\n"
+     "function tde2eErrorCode(error: Error): number {\n"
+     "  const code = /^([A-Z_]+): /.exec(error.message)?.[1];\n"
+     "  return (code && TDE2E_ERROR_CODES[code]) || TDE2E_UNKNOWN_ERROR;\n"
+     "}\n"
+     "\n"
+     "// The report, which starts the counters and the epoch lists again.\n"
+     "function takeE2eReport(): E2eStatusReport {\n"
+     "  const failure = call.getStatus();\n"
+     "  const now = performance.now();\n"
+     "  const senders: E2eSenderReport[] = [];\n"
+     "  for(const [userId, counters] of senderCounters) {\n"
+     "    const {ok, unknownEpoch, tooOld, duplicate, failed, lastOkAt} = counters;\n"
+     "    if(!(ok + unknownEpoch + tooOld + duplicate + failed)) continue;\n"
+     "    senders.push({\n"
+     "      user: Number(userId),\n"
+     "      ok,\n"
+     "      unknownEpoch,\n"
+     "      tooOld,\n"
+     "      duplicate,\n"
+     "      failed,\n"
+     "      lastOkMs: lastOkAt === undefined ? -1 : Math.round(now - lastOkAt)\n"
+     "    });\n"
+     "    counters.ok = counters.unknownEpoch = counters.tooOld = counters.duplicate = counters.failed = 0;\n"
+     "  }\n"
+     "  senders.sort((a, b) => a.user - b.user);\n"
+     "  senders.splice(E2E_REPORT_MAX_SENDERS);\n"
+     "\n"
+     "  const report: E2eStatusReport = {\n"
+     "    height: failure ? -1 : call.getHeight(),\n"
+     "    lastBlock: failure ? '' : bytesToHex(call.getLastBlockHash().subarray(0, 8)),\n"
+     "    error: failure ? tde2eErrorCode(failure) : 0,\n"
+     "    sendEpochs: sendEpochs.slice(),\n"
+     "    decryptEpochs: [...decryptEpochs],\n"
+     "    unknownEpochs: [...unknownEpochs],\n"
+     "    encrypted: encryptedFrames,\n"
+     "    encryptFailed: encryptFailedFrames,\n"
+     "    senders\n"
+     "  };\n"
+     "  decryptEpochs.clear();\n"
+     "  unknownEpochs.clear();\n"
+     "  encryptedFrames = encryptFailedFrames = 0;\n"
+     "  return report;\n"
+     "}\n"
+     "\n"
+     "// Rule 4 of the self-healing (ADR 0060 §5 of the server): frames came from senders in the last\n"
+     "// E2E_DECRYPT_STALL_MS, and every one of them has failed for that long without a frame decrypted.\n"
+     "function isDecryptStalled(): boolean {\n"
+     "  if(!call || call.getStatus()) return false;\n"
+     "  const now = performance.now();\n"
+     "  let sending = false;\n"
+     "  for(const {lastFrameAt, failingSince} of senderCounters.values()) {\n"
+     "    if(lastFrameAt === undefined || now - lastFrameAt > E2E_DECRYPT_STALL_MS) continue;\n"
+     "    if(failingSince === undefined || now - failingSince < E2E_DECRYPT_STALL_MS) return false;\n"
+     "    sending = true;\n"
+     "  }\n"
+     "  return sending;\n"
+     "}\n"
+     "\n"
+     "function resetE2eReport(): void {\n"
+     "  senderCounters.clear();\n"
+     "  decryptEpochs.clear();\n"
+     "  unknownEpochs.clear();\n"
+     "  sendEpochs = [];\n"
+     "  encryptedFrames = encryptFailedFrames = 0;\n"
+     "}\n"),
+    (E2E_WORKER,
+     "    frame.data = toFrameData(encrypted);\n    return frame;\n  } catch{\n    return undefined;\n  }\n}\n",
+     "    countEncrypted(encrypted); // pluma: for the status report, before the frame takes the bytes\n"
+     "    frame.data = toFrameData(encrypted);\n    return frame;\n  } catch{\n"
+     "    countEncrypted(undefined); // pluma: for the status report\n"
+     "    return undefined;\n  }\n}\n"),
+    (E2E_WORKER,
+     "    frame.data = toFrameData(decrypted);\n    // Recovered — let a later error on this SSRC report afresh.\n",
+     "    countDecrypted(fromUserId, encrypted); // pluma: for the status report\n"
+     "    frame.data = toFrameData(decrypted);\n"
+     "    // Recovered — let a later error on this SSRC report afresh.\n"),
+    (E2E_WORKER,
+     "  } catch(err) {\n    const message = (err as Error)?.message?.slice(0, 80) || '';\n",
+     "  } catch(err) {\n"
+     "    countDecryptError(fromUserId, err, new Uint8Array(frame.data)); // pluma: for the status report\n"
+     "    const message = (err as Error)?.message?.slice(0, 80) || '';\n"),
+    # Into a chat's call: not without RTCRtpScriptTransform, and not as a channel.
+    (IM_MANAGER,
+     "    return this.callTransitions.run(async() => {\n"
+     "      const chatId = peerId.toChatId();\n"
+     "      const hasRights = await managers.appChatsManager.hasRights(chatId, 'manage_call');\n",
+     "    return this.callTransitions.run(async() => {\n"
+     f"      // pluma: every group call is end-to-end {_ADR}; a browser that cannot encrypt frames\n"
+     "      // (no RTCRtpScriptTransform) is told so, as for a conference, and starts or joins nothing.\n"
+     "      if(!IS_CONFERENCE_CALL_SUPPORTED) {\n"
+     "        toastNew({langPackKey: 'ConferenceCall.Unsupported'});\n"
+     "        return;\n"
+     "      }\n"
+     "\n"
+     "      const chatId = peerId.toChatId();\n"
+     "      const hasRights = await managers.appChatsManager.hasRights(chatId, 'manage_call');\n"),
+    (IM_MANAGER,
+     "      const isLive = !!call.pFlags.rtmp_stream;\n"
+     "      if(!isLive && !IS_GROUP_CALL_SUPPORTED) {\n"
+     "        return;\n"
+     "      }\n",
+     f"      // pluma: no RTMP streams {_ADR}: a link to one leads nowhere (joinLiveStream). Every\n"
+     "      // other call is end-to-end, which a browser without RTCRtpScriptTransform cannot join: it says so.\n"
+     "      if(call.pFlags.rtmp_stream) {\n"
+     "        toastNew({langPackKey: 'Error.AnError'});\n"
+     "        return;\n"
+     "      }\n"
+     "\n"
+     "      if(!IS_GROUP_CALL_SUPPORTED) {\n"
+     "        return;\n"
+     "      }\n"
+     "\n"
+     "      if(!IS_CONFERENCE_CALL_SUPPORTED) {\n"
+     "        toastNew({langPackKey: 'ConferenceCall.Unsupported'});\n"
+     "        return;\n"
+     "      }\n"),
+    (IM_MANAGER,
+     "        leaveCurrentCall = await this.confirmLeavingCurrentCall(peerId, isLive ? 'Live' : 'Voice');\n",
+     "        leaveCurrentCall = await this.confirmLeavingCurrentCall(peerId, 'Voice');\n"),
+    (IM_MANAGER,
+     "      const confirm = !leaveCurrentCall;\n"
+     "      if(isLive) {\n"
+     "        if(confirm && !(await confirmGroupCallJoin(account, peerId, call.title))) {\n"
+     "          return;\n"
+     "        }\n"
+     "\n"
+     "        await leaveCurrentCall?.();\n"
+     "        await this.watchLiveStream(peerId, account, call.id);\n"
+     "        return;\n"
+     "      }\n",
+     "      const confirm = !leaveCurrentCall;\n"),
+    (IM_MANAGER,
+     "  public joinLiveStream(peerId: PeerId): Promise<void> {\n"
+     "    // * the account the stream is watched on: the tab can switch to another while this waits its turn\n"
+     "    const account = captureCallAccount(this.managers);\n"
+     "    return this.callTransitions.run(async() => {\n"
+     "      await this.discardCurrentCall(peerId, 'Live');\n"
+     "      await this.watchLiveStream(peerId, account);\n"
+     "    });\n"
+     "  }\n"
+     "\n"
+     "  // * `callId`: the stream asked for, when only that one will do (see rtmpCallsController.joinCall)\n"
+     "  private async watchLiveStream(peerId: PeerId, account: CallAccount, callId?: GroupCallId) {\n"
+     "    try {\n"
+     "      await rtmpCallsController.joinCall(peerId.toChatId(), account, callId);\n"
+     "    } catch(err) {\n"
+     "      console.error(err);\n"
+     "      toastNew({\n"
+     "        langPackKey: 'Error.AnError'\n"
+     "      });\n"
+     "      return;\n"
+     "    }\n"
+     "\n"
+     "    try {\n"
+     "      await openRtmpCallViewer(peerId);\n"
+     "    } catch(err) {\n"
+     "      this.log.error('opening RTMP viewer failed', err);\n"
+     "      toastNew({langPackKey: 'Error.AnError'});\n"
+     "    }\n"
+     "  }\n",
+     f"  // pluma: no RTMP streams {_ADR}: a stream's parts come from the server unencrypted, so\n"
+     "  // none is watched and the call the user is in is not left for one. The server starts none and marks no\n"
+     "  // call as one; the ways in went with IS_LIVE_STREAM_SUPPORTED.\n"
+     "  public joinLiveStream(peerId: PeerId): Promise<void> {\n"
+     "    toastNew({langPackKey: 'Error.AnError'});\n"
+     "    return Promise.resolve();\n"
+     "  }\n"),
+    (IM_MANAGER,
+     "import openRtmpCallViewer from '@lib/calls/openRtmpCallViewer';\n",
+     ""),
+    (JOIN_AS,
+     "  const {account, peerId, hasCall} = options;\n"
+     "  const {accountNumber, managers, myId} = account;\n",
+     "  const {account, peerId} = options;\n"
+     "  const {myId} = account;\n"),
+    (JOIN_AS,
+     "  let joinAs: GroupCallJoinAsOptions;\n"
+     "  try {\n"
+     "    joinAs = await managers.appGroupCallsManager.getGroupCallJoinAs(peerId);\n"
+     "  } catch(err) {\n"
+     "    // tdesktop requestList: a failed request joins as the account\n"
+     "    console.error('group call join-as list failed', err);\n"
+     "    return confirmed(myId);\n"
+     "  }\n"
+     "\n"
+     "  if(!shouldAskGroupCallJoinAs(joinAs, myId, hasCall)) {\n"
+     "    return confirmed(joinAs.peerIds.length ? joinAs.defaultPeerId : myId);\n"
+     "  }\n"
+     "\n"
+     "  const isBroadcast = await managers.appChatsManager.isBroadcast(peerId.toChatId());\n"
+     "  // * the peers to pick are the joining account's, whichever the tab went to while the list loaded\n"
+     "  await showCallAccount(accountNumber);\n"
+     "  const chosen = await pickGroupCallJoinAs({\n"
+     "    joinAs,\n"
+     "    selected: joinAs.defaultPeerId,\n"
+     "    context: hasCall ? 'join' : 'create',\n"
+     "    isBroadcast,\n"
+     "    myId\n"
+     "  });\n"
+     "\n"
+     "  if(chosen !== undefined) {\n"
+     "    saveGroupCallJoinAs(managers, peerId, chosen, joinAs);\n"
+     "  }\n"
+     "\n"
+     "  return chosen;\n"
+     "}\n",
+     f"  // pluma: every group call is end-to-end {_ADR}, and a member of its chain is a user: the\n"
+     "  // account joins, nobody is asked who to be and no choice is saved for the chat.\n"
+     "  return confirmed(myId);\n"
+     "}\n"),
+    (CALL_SETTINGS,
+     "    const isVideoChat = !!groupCallInstance && !groupCallInstance.e2e;\n",
+     "    const isVideoChat = !!groupCallInstance && !groupCallInstance.isConference;\n"),
+    (CALL_SETTINGS,
+     "      managers.appGroupCallsManager.getGroupCallJoinAs(chatId.toPeerId(true)).then(setJoinAsOptions, (err) => {\n"
+     "        console.error('group call join-as list failed', err);\n"
+     "      });\n",
+     f"      // pluma: no \"Display me as...\": a group call is joined as the account {_ADR}.\n"),
+    # The interface of a conference, which a chat's end-to-end call does not take.
+    (GROUP_CALL_POPUP,
+     "    if(!instance.e2e) {\n      updateCanInviteMembers();\n",
+     "    if(!instance.isConference) {\n      updateCanInviteMembers();\n"),
+    (GROUP_CALL_POPUP,
+     "      if(instance.e2e) return {\n        addPeople: () => void onInviteClick('conference'),\n",
+     "      if(instance.isConference) return {\n        addPeople: () => void onInviteClick('conference'),\n"),
+    (GROUP_CALL_POPUP,
+     "        const canManage = instance.e2e ? false :\n",
+     "        const canManage = instance.isConference ? false :\n"),
+    (GROUP_CALL_POPUP,
+     "        const canManage = !instance.e2e &&\n",
+     "        const canManage = !instance.isConference &&\n"),
+    (GROUP_CALL_PARTICIPANTS,
+     "  private async canManage() {\n    if(this.instance.e2e) {\n",
+     "  private async canManage() {\n    if(this.instance.isConference) {\n"),
+    (GROUP_CALL_PARTICIPANTS,
+     "  private async canRemoveParticipant(peerId: PeerId) {\n    if(this.instance.e2e) {\n",
+     "  private async canRemoveParticipant(peerId: PeerId) {\n    if(this.instance.isConference) {\n"),
+    (GROUP_CALL_PARTICIPANTS,
+     "    const isConference = !!instance.e2e;\n",
+     "    const isConference = instance.isConference;\n"),
+    (SHARE_INVITE,
+     "    if(instance.e2e) {\n      // A conference link is handed over in the Call Link box",
+     "    if(instance.isConference) {\n      // A conference link is handed over in the Call Link box"),
+    # Leaving a chat's call for another asks about the chat's video chat, not about a conference.
+    (IM_MANAGER,
+     "    const fromType = currentCall.e2e ? 'Conference' : 'Voice';\n",
+     f"    // pluma: a chat's video chat is end-to-end too {_ADR} and keeps its chat: only a conference\n"
+     "    // is left as one\n"
+     "    const fromType = currentCall.isConference ? 'Conference' : 'Voice';\n"),
+    # No RTMP streams.
+    (LIVE_STREAM_SUPPORT,
+     "import Modes from '@config/modes';\n\nconst IS_LIVE_STREAM_SUPPORTED = 'serviceWorker' in navigator && !Modes.noServiceWorker;\n",
+     f"// pluma: no RTMP streams {_ADR}: their parts come from the server unencrypted. Off, the\n"
+     "// client offers to start none (\"Stream With...\" of the chat's menu), shows none to watch (the live plate, a\n"
+     "// profile's action) and sets up no RTMP player (appDialogsManager).\n"
+     "const IS_LIVE_STREAM_SUPPORTED = false;\n"),
+    # No recording: the server does not serve phone.toggleGroupCallRecord. A chat's call has no recording entry in
+    # Web K; the RTMP player's menu had the only ones.
+    (RTMP_VIEWER,
+     "          }, {\n"
+     "            icon: 'radioon',\n"
+     "            text: 'Rtmp.MediaViewer.Menu.StartRecording',\n"
+     "            verify: () => getCall()?.admin && !getCall().call.pFlags.record_video_active,\n"
+     "            onClick: () => showRtmpRecordPopup()\n"
+     "          }, {\n"
+     "            icon: 'radiooff',\n"
+     "            text: 'Rtmp.MediaViewer.Menu.StopRecording',\n"
+     "            verify: () => getCall()?.admin && getCall().call.pFlags.record_video_active,\n"
+     "            onClick: () => {\n"
+     "              const call = getCall();\n"
+     "              if(!call) return;\n"
+     "              this.managers.appGroupCallsManager.stopRecording(call.inputCall).catch(() => {\n"
+     "                toastNew({\n"
+     "                  langPackKey: 'Error.AnError'\n"
+     "                });\n"
+     "              });\n"
+     "            }\n"
+     "          }, {\n"
+     "            icon: 'settings',\n",
+     "          }, {\n"
+     f"            // pluma: no recording, phone.toggleGroupCallRecord is not served {_ADR}\n"
+     "            icon: 'settings',\n"),
+    (RTMP_VIEWER, "import {showRtmpRecordPopup} from '@components/rtmp/recordPopup';\n", ""),
+    # A join CONF_WRITE_CHAIN_INVALID refuses goes again on the last block: 10 refusals in a row count only when
+    # the last block stayed the same, and while it moves the join goes on, for 100 attempts at most. The join
+    # remembers the last block its own was built on (joinConferenceAttempt), the connection compares.
+    (GROUP_CALLS,
+     "    const initialOffsets: Partial<{0: number; 1: number}> = {};\n",
+     "    const initialOffsets: Partial<{0: number; 1: number}> = {};\n"
+     "    // pluma: the chain's last block the join's own block was built on, none on an empty chain: the\n"
+     "    // connection tells by it a refusal of a chain that moves from one of a chain that stands (ADR 0060 §5\n"
+     "    // of the server)\n"
+     "    let joinChainHead: Uint8Array | undefined;\n"),
+    (GROUP_CALLS,
+     "      initialOffsets[0] = head.nextOffset;\n      return head.block ?\n",
+     "      initialOffsets[0] = head.nextOffset;\n      joinChainHead = head.block;\n      return head.block ?\n"),
+    (GROUP_CALLS,
+     "      initialOffsets[0] = head.nextOffset;\n      if(!head.block) {\n",
+     "      initialOffsets[0] = head.nextOffset;\n      joinChainHead = head.block;\n      if(!head.block) {\n"),
+    (GROUP_CALLS,
+     "        rebuildBlock: rebuildJoinBlock,\n",
+     "        rebuildBlock: rebuildJoinBlock,\n        chainHead: () => joinChainHead,\n"),
+    (GROUP_CALLS,
+     "    rebuildBlock?: () => Promise<Uint8Array>;\n",
+     "    rebuildBlock?: () => Promise<Uint8Array>;\n"
+     "    // pluma: the chain's last block the join's block was built on, the one rebuildBlock read last\n"
+     "    chainHead?: () => Uint8Array | undefined;\n"),
+    (GROUP_CALLS,
+     "          e2eRebuildBlock: opts.rebuildBlock,\n",
+     "          e2eRebuildBlock: opts.rebuildBlock,\n          e2eChainHead: opts.chainHead,\n"),
+    (GROUP_CALL_CONNECTION,
+     "import forEachReverse from '@helpers/array/forEachReverse';\n",
+     "import forEachReverse from '@helpers/array/forEachReverse';\nimport bytesCmp from '@helpers/bytes/bytesCmp';\n"),
+    (GROUP_CALL_CONNECTION,
+     "    e2eRebuildBlock?: () => Promise<Uint8Array>,\n",
+     "    e2eRebuildBlock?: () => Promise<Uint8Array>,\n"
+     "    // pluma: the chain's last block the join's block was built on, read again by e2eRebuildBlock; none on an\n"
+     "    // empty chain. Whether it changed after a refusal decides whether the refusal counts (ADR 0060 §5 of the\n"
+     "    // server).\n"
+     "    e2eChainHead?: () => Uint8Array | undefined,\n"),
+    (GROUP_CALL_CONNECTION,
+     "        e2eRebuildBlock: undefined,\n        e2eCommitRebuiltBlock: undefined,\n",
+     "        e2eRebuildBlock: undefined,\n        e2eChainHead: undefined,\n        e2eCommitRebuiltBlock: undefined,\n"),
+    (GROUP_CALL_CONNECTION,
+     "    this.options.e2eRebuildBlock = undefined;\n",
+     "    this.options.e2eRebuildBlock = undefined;\n    this.options.e2eChainHead = undefined;\n"),
+    (GROUP_CALL_CONNECTION,
+     "    // only the `block` field changes per attempt. Caps at 5 retries to bound\n"
+     "    // pathological loops; tdlib doesn't cap but we're conservative.\n",
+     "    // only the `block` field changes per attempt; how many attempts, the rule\n"
+     "    // below says (pluma).\n"),
+    (GROUP_CALL_CONNECTION,
+     "    const maxRetries = 5;\n",
+     "    // pluma: CONF_WRITE_CHAIN_INVALID repeats the join on the last block (ADR 0060 §5 of the server). A refusal\n"
+     "    // counts toward 10 in a row only when the last block read after it is the one the refused block was built\n"
+     "    // on: the chain stands, so the refusal is no race. While the chain moves, as when every member joins again\n"
+     "    // at once after a restart of the SFU and one join a round goes through, the join goes on, for 100 attempts\n"
+     "    // at most. Then it is the join's error. A join without e2eChainHead cannot see the chain move, and each\n"
+     "    // of its refusals counts.\n"
+     "    const maxStillRefusals = 10;\n"
+     "    const maxAttempts = 100;\n"
+     "    const chainHead = options.type === 'main' ? options.e2eChainHead : undefined;\n"
+     "    let stillRefusals = 0;\n"),
+    (GROUP_CALL_CONNECTION,
+     "        if(!isChainRace || attempt >= maxRetries - 1) throw err;\n"
+     "        if(!rebuildBlock) throw err;\n"
+     "        const newBlock = await rebuildBlock();\n",
+     "        if(!isChainRace || attempt >= maxAttempts - 1) throw err;\n"
+     "        if(!rebuildBlock) throw err;\n"
+     "        const refusedOn = chainHead?.();\n"
+     "        const newBlock = await rebuildBlock();\n"
+     "        const builtOn = chainHead?.();\n"
+     "        const chainMoved = builtOn !== undefined && (refusedOn === undefined || !bytesCmp(refusedOn, builtOn));\n"
+     "        stillRefusals = chainMoved ? 0 : stillRefusals + 1;\n"
+     "        if(stillRefusals >= maxStillRefusals) throw err;\n"),
+)
+
+# What the edits rely on and do not change: the end-to-end join of a conference by an inputGroupCall with a chat,
+# the browser check, the string it shows, the words the report sorts decryption errors by and the frame format it
+# reads epoch hashes from, the errors' codes, and the switch's users that hide the ways into a stream.
+E2E_GROUP_CALL_RELIES_ON = (
+    (GROUP_CALLS, "        chatId: opts.chatId,\n        muted: opts.muted,\n        joinVideo: opts.joinVideo,\n"
+                  "        transitionGeneration: opts.transitionGeneration,\n", 1),
+    (GROUP_CALLS, "        chatId: opts.chatId ?? NULL_PEER_ID,\n", 1),
+    (GROUP_CALLS, "      instance.attachE2e(opts.worker, opts.selfUserId, opts.initialOffsets);\n", 1),
+    (GROUP_CALLS, "      const placeholderId = (opts.input && opts.input._ === 'inputGroupCall') ?\n", 1),
+    (CONFERENCE_SUPPORT, "const IS_CONFERENCE_CALL_SUPPORTED = IS_CONFERENCE_CALL_ENABLED && IS_RTC_SCRIPT_TRANSFORM_SUPPORTED;\n", 1),
+    ("src/lang.ts", "  'ConferenceCall.Unsupported': 'Encrypted group calls are not supported in this browser. "
+                    "Open this call in a supported Telegram app.',\n", 1),
+    (IM_MANAGER, "import IS_CONFERENCE_CALL_SUPPORTED from '@environment/conferenceCallSupport';\n", 1),
+    (E2E_CALL, "    throw new Error('decryptPacket: no matching active epoch');\n", 1),
+    (E2E_CALL, "    if(seqno <= oldest) throw new Error(`replay: seqno ${seqno} older than window (max ${window.max})`);\n", 1),
+    (E2E_CALL, "    if(window.seen.has(seqno)) throw new Error(`replay: seqno ${seqno} already seen`);\n", 1),
+    (E2E_CALL, "  const unencryptedPrefixLength = trailerReader.uint32();\n", 1),
+    (E2E_CALL, "  const epochsN = head & 0xff;\n", 1),
+    (E2E_CALL, "    super(`${code}: ${message}`);\n", 1),
+    (E2E_BLOCKCHAIN, "    super(`${code}: ${message}`);\n", 1),
+    ("src/components/chat/topbar.ts", "        text: 'Rtmp.Topbar.StreamWith',\n", 1),
+    ("src/components/chat/topbar.ts", "        verify: () => IS_LIVE_STREAM_SUPPORTED\n", 1),
+    ("src/components/chat/topbarPlates.ts",
+     "  const live = IS_LIVE_STREAM_SUPPORTED ? createChatLivePlate(topbar, chat, managers) : undefined;\n", 1),
+    ("src/components/peerProfile.tsx", "    return !isRtmp() || IS_LIVE_STREAM_SUPPORTED;\n", 1),
+    ("src/lib/appDialogsManager.ts", "    if(IS_LIVE_STREAM_SUPPORTED) rtmpCallsController.construct(managers);\n", 1),
+    # The self-healing: an instance's reasons reach the controller's rejoin, which pauses and toasts with these.
+    (GROUP_CALL, "  private requestConferenceRecovery(reason: string): void {\n", 1),
+    (GROUP_CALL, "    this.dispatchEvent('conferenceRecoveryRequired', reason);\n", 1),
+    (GROUP_CALLS, "      createdInstance.addEventListener('conferenceRecoveryRequired', (reason) => {\n"
+                  "        void this.recoverConference(createdInstance, reason);\n", 1),
+    (GROUP_CALLS, "import pause from '@helpers/schedulers/pause';\n", 1),
+    (GROUP_CALLS, "import {toastNew} from '@components/toast';\n", 1),
+    (GROUP_CALLS, "import {GroupCallId, GroupCallConnectionType} from '@appManagers/appGroupCallsManager';\n", 1),
+    # What the report reads: the bytes of a frame, before the frame takes them, on both sides.
+    (E2E_WORKER, "    const encrypted = new Uint8Array(frame.data);\n    let decrypted = await call.decrypt(", 1),
+)
+
+# The rejoins an instance asks for (requestConferenceRecovery, requestConferenceRecoveryForForbidden), sorted:
+# the ones the encryption asks for, which the controller bounds (isE2eRejoinReason), and Web K's own watchdog of
+# its pollers, which is a transport's matter. An upstream reason of its own is one to sort.
+_REJOIN_REASON = re.compile(r"\brequestConferenceRecovery(?:ForForbidden)?\('([\w-]+)'")
+E2E_REJOIN_REASONS = {"e2e-failure", "membership-lost", "chain-behind", "decrypt-stalled", "roster-forbidden",
+                      "member-prune-forbidden", "chain-forbidden", "sync-refresh-forbidden", "broadcast-forbidden",
+                      "source-resolution-forbidden"}
+TRANSPORT_REJOIN_REASONS = {"sync-unrecoverable-locally"}
+
+# Who reads which kind of call. A call's `.e2e` (its encryption worker; the instance's own `this.e2e` is its
+# crypto) outside the worker's port: the emoji badge and the panel's class for it ask it (a chat's call shows
+# them), the title asks it together with the chat (a chat's call is named by its chat), the status report's
+# connection asks it, the sandbox's stories set it. `isConference` is the interface of a conference, `isE2e`
+# the crypto's path. An upstream change to any of these counts is a new reader to sort.
+_E2E_READ = re.compile(r"(?<![\w$])(?!this\??\.)[\w$]+\??\.e2e\b")
+E2E_READS = {GROUP_CALL_POPUP: 2, "src/components/groupCall/title.ts": 1, GROUP_CALL_CONNECTION: 1,
+             "src/components/popupSandbox/stories/calls.ts": 1}
+_IS_CONFERENCE_READ = re.compile(r"\.isConference\b")
+IS_CONFERENCE_READS = {GROUP_CALLS: 2, GROUP_CALL_CONNECTION: 1, GROUP_CALL_POPUP: 4, GROUP_CALL_PARTICIPANTS: 3,
+                       SHARE_INVITE: 1, CALL_SETTINGS: 1, IM_MANAGER: 1}
+_IS_E2E_READ = re.compile(r"\.isE2e\b")
+IS_E2E_READS = {GROUP_CALLS: 3, GROUP_CALL: 1}
+# The join-as list is asked by nothing; its maker stays for the manager's own sake.
+_JOIN_AS_LIST = re.compile(r"\bgetGroupCallJoinAs\(")
+JOIN_AS_LISTS = {"src/lib/appManagers/appGroupCallsManager.ts": 1}
+# The RTMP player: made by openRtmpCallViewer only, which nothing calls, and the stream joined by that player
+# only.
+_RTMP_PLAYER = re.compile(r"\bopenRtmpCallViewer\(|\bnew AppMediaViewerRtmp\(|\brtmpCallsController\.joinCall\(")
+RTMP_PLAYERS = {"src/lib/calls/openRtmpCallViewer.ts": 2, "src/components/mediaViewer/rtmp.ts": 1}
+# Starting a stream: the chat's menu item, which IS_LIVE_STREAM_SUPPORTED hides, the player nothing opens, the
+# sandbox's story, and the popup itself.
+_RTMP_START = re.compile(r"\bshowRtmpStartStreamPopup\(")
+RTMP_STARTS = {"src/components/chat/topbar.ts": 1, "src/components/mediaViewer/rtmp.ts": 1,
+               "src/components/popupSandbox/stories/misc.ts": 1, "src/components/rtmp/adminPopup.tsx": 1}
+# Starting or stopping a recording: the recording popup (made by showRtmpRecordPopup, which nothing calls) and its
+# request; the manager's own methods are no calls.
+_RECORDING = re.compile(r"\bshowRtmpRecordPopup\(|\.startRecording\(|\.stopRecording\(")
+RECORDINGS = {"src/components/rtmp/recordPopup.tsx": 2}
+# The recording entries' strings are in the strings alone.
+_RECORDING_ENTRY = re.compile(r"""['"`]Rtmp\.MediaViewer\.Menu\.(?:Start|Stop)Recording['"`]""")
+RECORDING_ENTRIES = {"src/lang.ts": 2}
+
+
+def e2e_group_calls(tree):
+    for rel, text, count in E2E_GROUP_CALL_RELIES_ON:
+        tree.expect(rel, text, count)
+    for rel, old, new in E2E_GROUP_CALL_EDITS:
+        tree.replace(rel, old, new)
+
+
+def verify_e2e_group_calls(sources):
+    for rel, old, new in E2E_GROUP_CALL_EDITS:
+        text = sources[rel]
+        if (new and text.count(new) != 1) or old in (text.replace(new, "") if new else text):
+            raise PatchError(f"{rel}: the edit of task 094 is not there")
+    if "joinGroupCallInternal(" in _COMMENT.sub("", sources[GROUP_CALLS]).replace("private async joinGroupCallInternal(", ""):
+        raise PatchError(f"{GROUP_CALLS}: a group call is joined without end-to-end encryption")
+    reasons = set(_REJOIN_REASON.findall(_COMMENT.sub("", sources[GROUP_CALL])))
+    if reasons != E2E_REJOIN_REASONS | TRANSPORT_REJOIN_REASONS:
+        raise PatchError(f"{GROUP_CALL}: rejoins for {sorted(reasons ^ (E2E_REJOIN_REASONS | TRANSPORT_REJOIN_REASONS))}"
+                         ", which the self-healing has not sorted")
+    for reason in sorted(reasons):
+        counted = reason in ("e2e-failure", "membership-lost", "chain-behind", "decrypt-stalled") or \
+            reason.endswith("-forbidden")
+        if counted != (reason in E2E_REJOIN_REASONS):
+            raise PatchError(f"{GROUP_CALLS}: isE2eRejoinReason sorts the rejoin for {reason!r} wrongly")
+    for pattern, expected, what in (
+        (_E2E_READ, E2E_READS, "reads of a call's e2e worker"),
+        (_IS_CONFERENCE_READ, IS_CONFERENCE_READS, "reads of isConference"),
+        (_IS_E2E_READ, IS_E2E_READS, "reads of isE2e"),
+        (_JOIN_AS_LIST, JOIN_AS_LISTS, "asks for the join-as list"),
+        (_RTMP_PLAYER, RTMP_PLAYERS, "ways into the RTMP player"),
+        (_RTMP_START, RTMP_STARTS, "ways to start an RTMP stream"),
+        (_RECORDING, RECORDINGS, "ways to record a call"),
+        (_RECORDING_ENTRY, RECORDING_ENTRIES, "recording entries"),
+    ):
+        for rel, text in sources.items():
+            if pattern is _E2E_READ and rel.startswith("src/lib/calls/e2e/"):
+                continue
+            found = len(pattern.findall(_COMMENT.sub("", text)))
+            if found != expected.get(rel, 0):
+                raise PatchError(f"{rel}: {found} {what}, expected {expected.get(rel, 0)}; is every group call "
+                                 "still end-to-end, joined as the account, with no RTMP stream and no recording?")
+
+
+# --- the colours of calls ---------------------------------------------------------
+#
+# The owner's decision of 2026-11-12 (variant A, "Шалфей"): calls are drawn in the sage palette of the rebranding
+# (task 017 of the server), not in Telegram's colours. Telegram iOS draws a call's background as three
+# four-point gradients (CallBackgroundLayer.swift:108-124 at the pinned iOS), which Web K's call screen copies
+# (components/call/index.tsx GRADIENT_COLORS): connecting 568FD6 626ED5 A667D5 7664DA, connected ACBD65 459F8D
+# 53A4D1 3E917A, weak signal C0508D F09536 CE5081 FC7C4C. Pluma's, the points in the same order:
+CALL_BACKGROUNDS = {
+    "connecting": ("3a4a3c", "4f6e52", "2c3a2d", "5b7a5e"),
+    "active": ("5b7a5e", "6f8f72", "4f6e52", "7fa082"),
+    "weak": ("8a5a44", "a86b4c", "7a4e3b", "b97a55"),
+}
+# The other colours of calls are mapped by meaning onto those sets: Telegram's blue and purple (muted, waiting,
+# a raised hand, connecting) onto the connecting one, green (speaking, unmuted) onto the connected one, red and
+# orange (muted by an admin) onto the weak one, and the text of a state onto the palette's accents on a dark
+# ground (#9DBB9F the accent, #7FA082 the soft one). The group call's screen is always dark; the call's plate
+# over a chat keeps white text on its gradient. The buttons that end, decline or leave a call stay red and the
+# one that answers it green, as in Telegram's other clients (the owner's decision of 2026-11-13; CALL_BUTTONS
+# below). Web K defines them in:
+#   - components/call/index.tsx: the 1:1 call's backgrounds;
+#   - scss/base.scss: the group call's --gc-* colours, which its stylesheets, the participants' and the
+#     microphone's lottie colours (groupCall/index.tsx getColorByMutedState), the avatars' waves (avatarBlobs.ts)
+#     and the microphone's gradients and waves (microphoneBlobs.ts) all read;
+#   - scss/partials/popups/_groupCall.scss and _call.scss: the call's screens, the only places that take the
+#     state texts in the sage palette (CALL_TEXT_SCOPES below);
+#   - scss/partials/_chatPinned.scss: the call's plate over a chat (.pinned-call), its gradients per state and its
+#     microphone button;
+#   - components/topbarWeave.ts: the plate's former canvas gradients, unused but kept in step;
+#   - components/popupSandbox/stories/calls.ts: the fake camera of the development sandbox's call stories.
+CALL_COLORS = "src/components/call/index.tsx"
+CALL_POPUP = "src/scss/partials/popups/_call.scss"
+CALL_PLATE = "src/scss/partials/_chatPinned.scss"
+CALL_WEAVE = "src/components/topbarWeave.ts"
+CALL_SANDBOX = "src/components/popupSandbox/stories/calls.ts"
+_SAGE = "(task 017 of the server)"
+# The group call's state texts (--gc-green/blue/red-text-color) are also read outside calls: by polls, a right
+# and a wrong answer (chat/bubbleParts/pollMessageContent/styles.module.scss 280-349), and by the markup's diff
+# (scss/partials/_markup.scss 110, 115). The root keeps Telegram's (base.scss 300-302); the sage ones are
+# --gc-call-*-text-color, which the screens of the group call (.popup-group-call, groupCall/index.tsx 845) and
+# of a 1:1 call (.popup-call, call/index.tsx 829) take as their --gc-*-text-color.
+CALL_TEXT_OUTSIDE = ("  --gc-green-text-color: #5CC85E;\n"
+                     "  --gc-blue-text-color: #3390ec;\n"
+                     "  --gc-red-text-color: #ff595a;\n")
+_CALL_TEXT_SCOPE = ("  // pluma: the call's state texts are the sage ones (base.scss --gc-call-*) inside its screen only;\n"
+                    "  // polls and the markup's diff read the root's, which keep Telegram's\n"
+                    "  --gc-green-text-color: var(--gc-call-green-text-color);\n"
+                    "  --gc-blue-text-color: var(--gc-call-blue-text-color);\n"
+                    "  --gc-red-text-color: var(--gc-call-red-text-color);\n")
+CALL_TEXT_SCOPES = tuple((rel, head + "\n" + tail, head + "\n" + _CALL_TEXT_SCOPE + "\n" + tail)
+                         for rel, head, tail in (
+    ("src/scss/partials/popups/_groupCall.scss", '.popup-group-call {\n  $parent: ".popup";\n',
+     "  // A panel, not a sheet:"),
+    (CALL_POPUP, '.popup-call {\n  $parent: ".popup";\n', "  #{$parent} {\n"),
+))
+_CALL_TEXT_SET = re.compile(r"--gc-(?:green|blue|red)-text-color\s*:")
+
+CALL_COLOR_EDITS = (
+    (CALL_COLORS,
+     "const GRADIENT_COLORS = {\n"
+     "  connecting: '568fd6,626ed5,a667d5,7664da',\n"
+     "  active:     'acbd65,459f8d,53a4d1,3e917a',\n"
+     "  weak:       'c0508d,f09536,ce5081,fc7c4c'\n"
+     "};\n",
+     "// pluma: the same gradients in the sage palette, the points in the same order (task 017 of the server; the\n"
+     "// owner's decision of 2026-11-12).\n"
+     "const GRADIENT_COLORS = {\n"
+     + "".join(f"  {state}:{' ' * (11 - len(state))}'{','.join(colors)}'{',' if state != 'weak' else ''}\n"
+               for state, colors in CALL_BACKGROUNDS.items())
+     + "};\n"),
+    ("src/scss/base.scss",
+     "  --gc-button-leave-color: rgba(100, 50, 50, .92);\n"
+     "  --gc-button-unmuted-color: rgba(27, 66, 42, .92);\n"
+     "  --gc-button-muted-color: rgba(38, 53, 76, .92);\n"
+     "  --gc-button-hand-color: rgba(71, 40, 63, .92);\n"
+     "  --gc-button-unmuted-fill-color: #195530;\n"
+     "  --gc-button-muted-fill-color: #3C87F7;\n"
+     "  --gc-green-color: #195530;\n"
+     "  --gc-blue-color: #3C87F7;\n"
+     "  --gc-red-color: #643333;\n"
+     "\n"
+     "  --gc-primary-text-color: #fff;\n"
+     "  --gc-secondary-text-color: #aaaaaa;\n"
+     "  --gc-green-text-color: #5CC85E;\n"
+     "  --gc-blue-text-color: #3390ec;\n"
+     "  --gc-red-text-color: #ff595a;\n",
+     f"  // pluma: the call's colours in the sage palette {_SAGE}: red the\n"
+     "  // weak signal's, unmuted and green the connected call's, muted, a raised hand and blue the connecting\n"
+     "  // call's; Leave keeps Telegram's red\n"
+     "  --gc-button-leave-color: rgba(100, 50, 50, .92);\n"
+     "  --gc-button-unmuted-color: rgba(79, 110, 82, .92);\n"
+     "  --gc-button-muted-color: rgba(44, 58, 45, .92);\n"
+     "  --gc-button-hand-color: rgba(58, 74, 60, .92);\n"
+     "  --gc-button-unmuted-fill-color: #4F6E52;\n"
+     "  --gc-button-muted-fill-color: #5B7A5E;\n"
+     "  --gc-green-color: #4F6E52;\n"
+     "  --gc-blue-color: #5B7A5E;\n"
+     "  --gc-red-color: #7A4E3B;\n"
+     "\n"
+     "  --gc-primary-text-color: #fff;\n"
+     "  --gc-secondary-text-color: #aaaaaa;\n"
+     "  // pluma: polls and the markup's diff read these too, so they keep Telegram's; the call's screens take\n"
+     "  // the sage ones below instead (CALL_TEXT_SCOPES)\n"
+     + CALL_TEXT_OUTSIDE +
+     "  // pluma: the call's state texts in the sage palette: speaking the accent, waiting the soft accent of the\n"
+     "  // dark theme, muted by an admin the weak signal's\n"
+     "  --gc-call-green-text-color: #9DBB9F;\n"
+     "  --gc-call-blue-text-color: #7FA082;\n"
+     "  --gc-call-red-text-color: #B97A55;\n"),
+    *CALL_TEXT_SCOPES,
+    # The participants' and the microphone's lottie colours read the root's custom properties
+    # (helpers/dom/customProperties.ts reads getComputedStyle(document.documentElement)), not the call's screen.
+    (GROUP_CALL_POPUP,
+     "  const propertyValue = customProperties.getProperty('gc-' + colorStr + '-text-color');\n",
+     "  // pluma: the state colours of the call are the sage ones (base.scss --gc-call-*); the root's\n"
+     "  // --gc-*-text-color keep Telegram's for polls and the markup's diff\n"
+     "  const prefix = colorStr === 'secondary' ? 'gc-' : 'gc-call-';\n"
+     "  const propertyValue = customProperties.getProperty(prefix + colorStr + '-text-color');\n"),
+    ("src/scss/base.scss",
+     "  --gc-microphone-unmuted-from: #00A3B4;\n"
+     "  --gc-microphone-unmuted-to: #00CB47;\n"
+     "  --gc-microphone-muted-from: #4EABF8;\n"
+     "  --gc-microphone-muted-to: #3478F6;\n"
+     "  --gc-microphone-hand-from: #DF44B8;\n"
+     "  --gc-microphone-hand-to: #3851EB;\n",
+     "  // pluma: unmuted the connected call's sage, muted and a raised hand the connecting call's (task 017 of the\n"
+     "  // server)\n"
+     "  --gc-microphone-unmuted-from: #5B7A5E;\n"
+     "  --gc-microphone-unmuted-to: #7FA082;\n"
+     "  --gc-microphone-muted-from: #4F6E52;\n"
+     "  --gc-microphone-muted-to: #3A4A3C;\n"
+     "  --gc-microphone-hand-from: #5B7A5E;\n"
+     "  --gc-microphone-hand-to: #2C3A2D;\n"),
+    (CALL_PLATE,
+     "  initial-value: #0976E3;\n}\n\n@property --pc-c2 {\n  syntax: '<color>';\n  inherits: false;\n"
+     "  initial-value: #2BCEFF;\n}\n\n@property --pc-c3 {\n  syntax: '<color>';\n  inherits: false;\n"
+     "  initial-value: #2BCEFF;\n}\n",
+     "  initial-value: #2C3A2D; // pluma: the muted plate's sage\n}\n\n@property --pc-c2 {\n  syntax: '<color>';\n"
+     "  inherits: false;\n  initial-value: #4F6E52;\n}\n\n@property --pc-c3 {\n  syntax: '<color>';\n  inherits: false;\n"
+     "  initial-value: #4F6E52;\n}\n"),
+    (CALL_PLATE,
+     "      // Default (no state class yet) — blue, same as `.is-muted`.\n"
+     "      --pc-c1: #0976E3;\n      --pc-c2: #2BCEFF;\n      --pc-c3: #2BCEFF;\n",
+     "      // Default (no state class yet) — same as `.is-muted`.\n"
+     "      --pc-c1: #2C3A2D;\n      --pc-c2: #4F6E52;\n      --pc-c3: #4F6E52;\n"),
+    (CALL_PLATE,
+     "  &.is-unmuted .topbar-call-center {\n    --pc-c1: #52CE5D;\n    --pc-c2: #00B1C0;\n    --pc-c3: #00B1C0;\n  }\n"
+     "\n"
+     "  &.is-muted .topbar-call-center {\n    --pc-c1: #0976E3;\n    --pc-c2: #2BCEFF;\n    --pc-c3: #2BCEFF;\n  }\n"
+     "\n"
+     "  &.is-muted-by-admin .topbar-call-center {\n    --pc-c1: #F05459;\n    --pc-c2: #766EE9;\n    --pc-c3: #57A4FE;\n"
+     "  }\n"
+     "\n"
+     "  &.is-rtmp .topbar-call-center {\n    --pc-c1: #4588E3;\n    --pc-c2: #976FFF;\n    --pc-c3: #E46ACE;\n  }\n"
+     "\n"
+     "  &.is-connecting .topbar-call-center {\n    --pc-c1: #8599aa;\n    --pc-c2: #8599aa;\n    --pc-c3: #8599aa;\n"
+     "  }\n"
+     "\n"
+     "  // Mic button color: green when actively unmuted, primary otherwise.\n"
+     "  &.is-unmuted .topbar-call-mic-btn {\n    background-color: #54B655;\n\n    @include hover() {\n"
+     "      background-color: #4D9F4C !important;\n    }\n  }\n",
+     f"  // pluma: the plate's states in the sage palette {_SAGE}: unmuted the\n"
+     "  // connected call's, muted, a stream and connecting the connecting call's, muted by an admin the weak signal's\n"
+     "  &.is-unmuted .topbar-call-center {\n    --pc-c1: #5B7A5E;\n    --pc-c2: #6F8F72;\n    --pc-c3: #6F8F72;\n  }\n"
+     "\n"
+     "  &.is-muted .topbar-call-center {\n    --pc-c1: #2C3A2D;\n    --pc-c2: #4F6E52;\n    --pc-c3: #4F6E52;\n  }\n"
+     "\n"
+     "  &.is-muted-by-admin .topbar-call-center {\n    --pc-c1: #8A5A44;\n    --pc-c2: #A86B4C;\n    --pc-c3: #7A4E3B;\n"
+     "  }\n"
+     "\n"
+     "  &.is-rtmp .topbar-call-center {\n    --pc-c1: #3A4A3C;\n    --pc-c2: #5B7A5E;\n    --pc-c3: #4F6E52;\n  }\n"
+     "\n"
+     "  &.is-connecting .topbar-call-center {\n    --pc-c1: #3A4A3C;\n    --pc-c2: #3A4A3C;\n    --pc-c3: #3A4A3C;\n"
+     "  }\n"
+     "\n"
+     "  // Mic button color: the connected call's sage when actively unmuted, primary otherwise.\n"
+     "  &.is-unmuted .topbar-call-mic-btn {\n    background-color: #6F8F72;\n\n    @include hover() {\n"
+     "      background-color: #5B7A5E !important;\n    }\n  }\n"),
+    (CALL_WEAVE,
+     "    const MUTED_BY_ADMIN_STOPS: ColorStops = [[0, '#F05459'], [.4, '#766EE9'], [1, '#57A4FE']];\n"
+     "    const UNMUTED_STOPS: ColorStops = [[0, '#52CE5D'], [1, '#00B1C0']];\n"
+     "    const MUTED_STOPS: ColorStops = [[0, '#0976E3'], [1, '#2BCEFF']];\n"
+     "    const CONNECTING_STOPS: ColorStops = [[0, '#8599aa'], [1, '#8599aa']];\n"
+     "    const RTMP_STOPS: ColorStops = [[0, '#4588E3'], [.5, '#976FFF'], [1, '#E46ACE']];\n",
+     f"    // pluma: the plate's colours in the sage palette {_SAGE}, as\n"
+     "    // .pinned-call has them\n"
+     "    const MUTED_BY_ADMIN_STOPS: ColorStops = [[0, '#8A5A44'], [.4, '#A86B4C'], [1, '#7A4E3B']];\n"
+     "    const UNMUTED_STOPS: ColorStops = [[0, '#5B7A5E'], [1, '#6F8F72']];\n"
+     "    const MUTED_STOPS: ColorStops = [[0, '#2C3A2D'], [1, '#4F6E52']];\n"
+     "    const CONNECTING_STOPS: ColorStops = [[0, '#3A4A3C'], [1, '#3A4A3C']];\n"
+     "    const RTMP_STOPS: ColorStops = [[0, '#3A4A3C'], [.5, '#5B7A5E'], [1, '#4F6E52']];\n"),
+    # Accept of a 1:1 call (call/index.tsx 569-573, CallButton color="green"; _call.scss 348-350) read the
+    # group call's speaking green, which is sage now; it keeps Telegram's. Decline and End take the theme's
+    # danger colour (_call.scss 344-346) and stay as they are.
+    (CALL_POPUP,
+     "    &-green {\n"
+     "      background-color: var(--gc-green-text-color) !important;\n"
+     "    }\n",
+     "    // pluma: Accept keeps Telegram's green; --gc-green-text-color, speaking, is the palette's\n"
+     "    &-green {\n"
+     "      background-color: #5CC85E !important;\n"
+     "    }\n"),
+    (CALL_SANDBOX,
+     "    gradient.addColorStop(0, '#3e917a');\n"
+     "    gradient.addColorStop(0.5, '#53a4d1');\n"
+     "    gradient.addColorStop(1, '#a667d5');\n",
+     f"    // pluma: the call's colours in the sage palette {_SAGE}\n"
+     "    gradient.addColorStop(0, '#4f6e52');\n"
+     "    gradient.addColorStop(0.5, '#7fa082');\n"
+     "    gradient.addColorStop(1, '#3a4a3c');\n"),
+)
+
+# Telegram's colours of calls, as the places above had them. Most are found nowhere else in the client and must
+# be gone from every source; a few are also colours of something else (the accent, the danger and green of a
+# theme, Premium's gradient, a sticker's outline) and must be gone from the call's own files, from the --gc-*
+# colours and from the call's plate.
+TELEGRAM_CALL_COLORS = (
+    "568fd6", "626ed5", "a667d5", "7664da", "acbd65", "459f8d", "53a4d1", "3e917a", "c0508d", "f09536", "ce5081",
+    "fc7c4c", "195530", "3c87f7", "643333", "00a3b4", "00cb47", "4eabf8", "3478f6", "df44b8", "3851eb", "0976e3",
+    "2bceff", "52ce5d", "00b1c0", "f05459", "766ee9", "57a4fe", "8599aa", "54b655", "4d9f4c",
+)
+TELEGRAM_CALL_COLORS_SHARED = ("5cc85e", "3390ec", "ff595a", "4588e3", "976fff", "e46ace")
+TELEGRAM_CALL_TINTS = ("100, 50, 50", "27, 66, 42", "38, 53, 76", "71, 40, 63")
+# The buttons that keep Telegram's colours, each exactly as the edits above leave it and only there: Leave of a
+# group call (groupCall/index.tsx 664-668 makes it .group-call-button-red, _groupCall.scss 139-141 paints it
+# with --gc-button-leave-color) and Accept of a 1:1 call.
+CALL_BUTTONS = (
+    ("src/scss/base.scss", "  --gc-button-leave-color: rgba(100, 50, 50, .92);\n"),
+    (CALL_POPUP, "    &-green {\n      background-color: #5CC85E !important;\n    }\n"),
+)
+_TELEGRAM_CALL_COLOR = re.compile(r"(?<![0-9A-Fa-f])(?:" + "|".join(TELEGRAM_CALL_COLORS) + r")(?![0-9A-Fa-f])"
+                                  r"|rgba?\((?:" + "|".join(TELEGRAM_CALL_TINTS) + r"),", re.IGNORECASE)
+_TELEGRAM_CALL_COLOR_SHARED = re.compile(r"(?<![0-9A-Fa-f])(?:" + "|".join(TELEGRAM_CALL_COLORS_SHARED) +
+                                         r")(?![0-9A-Fa-f])", re.IGNORECASE)
+# The call's own files: the screens of 1:1 and group calls, conferences, the plate and its parts.
+_CALL_UI = re.compile(r"^src/(?:components/(?:call|groupCall|conferenceCall)/|components/(?:topbarCall\.tsx|"
+                      r"topbarWeave\.ts|groupCallActiveIcon\.ts)$|components/popupSandbox/stories/calls\.ts$|"
+                      r"scss/partials/popups/_(?:call|groupCall|conferenceCall)\.scss$|scss/partials/_chatPinned\.scss$)")
+
+
+def call_colors(tree):
+    for rel, old, new in CALL_COLOR_EDITS:
+        tree.replace(rel, old, new)
+
+
+def verify_call_colors(sources):
+    for rel, button in CALL_BUTTONS:
+        if sources[rel].count(button) != 1:
+            raise PatchError(f"{rel}: a call's button does not keep Telegram's colour")
+    if sources["src/scss/base.scss"].count(CALL_TEXT_OUTSIDE) != 1:
+        raise PatchError("src/scss/base.scss: the root's --gc-*-text-color, which polls and the markup read, do not "
+                         "keep Telegram's colours")
+    for rel, old, new in CALL_COLOR_EDITS:
+        if sources[rel].count(new) != 1 or old in sources[rel]:
+            raise PatchError(f"{rel}: the call is not in the sage palette")
+    for rel, text in sources.items():
+        for r, kept in CALL_BUTTONS + (("src/scss/base.scss", CALL_TEXT_OUTSIDE),):
+            if r == rel:
+                text = text.replace(kept, "")
+        for r, _, scope in CALL_TEXT_SCOPES:
+            if r == rel:
+                text = text.replace(scope, "")
+        if _CALL_TEXT_SET.search(text) or ("gc-call-" in text and not _CALL_UI.match(rel)
+                                           and rel != "src/scss/base.scss"):
+            raise PatchError(f"{rel}: the call's state texts are set or read outside a call's screen; polls and "
+                             "the markup keep Telegram's colours")
+        m = _TELEGRAM_CALL_COLOR.search(text)
+        if not m and _CALL_UI.match(rel):
+            m = _TELEGRAM_CALL_COLOR_SHARED.search(text)
+        if not m and rel == "src/scss/base.scss":
+            m = _TELEGRAM_CALL_COLOR_SHARED.search("".join(re.findall(r"^\s*--gc-[^\n]*\n", text, re.MULTILINE)))
+        if m:
+            raise PatchError(f"{rel}: Telegram's call colour {m.group()!r} is still there; a call is drawn in the "
+                             "sage palette")
 
 
 # --- the screens of the login code ----------------------------------------------
