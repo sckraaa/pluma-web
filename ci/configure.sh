@@ -38,7 +38,11 @@ if [ -n "$(git -C upstream status --porcelain)" ]; then
 	exit 1
 fi
 
+# The build an open tab compares with the site's (README, Updates of an open
+# tab): the commit of this repository, which the server's image is tagged by.
+build_id=$(git rev-parse HEAD)
+
 python3 -I ci/patch.py --source upstream --upstream upstream.env --app config/app.env \
-	--server-url "$SERVER_URL" --rsa-public-key "$tmp/key.pem" --target "$target"
+	--server-url "$SERVER_URL" --rsa-public-key "$tmp/key.pem" --target "$target" --build-id "$build_id"
 echo "configure: $target build"
 echo "target=$target" >>"${GITHUB_OUTPUT:-/dev/null}"
