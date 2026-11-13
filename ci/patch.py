@@ -362,7 +362,7 @@ def load_env(path):
 
 
 class Config:
-    def __init__(self, upstream, app, server_url, rsa_pem, target):
+    def __init__(self, upstream, app, server_url, rsa_pem, target, build_id):
         def need(env, key):
             if not env.get(key):
                 raise PatchError(f"{key} is not set")
@@ -389,6 +389,16 @@ class Config:
         if not re.fullmatch(r"[0-9a-f]{32}", self.api_hash):
             raise PatchError("PLUMA_API_HASH must be 32 lowercase hex digits")
 
+        # The release of the site (update_prompts): the commit of this
+        # repository it is built from, and the epoch of mandatory releases.
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", build_id):
+            raise PatchError(f"build id {build_id!r}: the full commit hash of this repository")
+        self.build_id = build_id
+        epoch = need(app, "PLUMA_REQUIRED_EPOCH")
+        if not re.fullmatch(r"0|[1-9]\d{0,8}", epoch):
+            raise PatchError(f"PLUMA_REQUIRED_EPOCH {epoch!r} is not a number from 0")
+        self.required_epoch = int(epoch)
+
         self.server_url = parse_server_url(server_url)
 
         n, e = parse_pkcs1_public_key(rsa_pem)
@@ -413,6 +423,8 @@ class Config:
             "modulus": self.modulus,
             "exponent": self.exponent,
             "fingerprint": f"{self.fingerprint:#018x}",
+            "build_id": self.build_id,
+            "required_epoch": self.required_epoch,
         }
 
 
@@ -1859,6 +1871,9 @@ def patch(tree, c):
 
     help_section(tree)
 
+    # A release of the site reaches open tabs.
+    update_prompts(tree, c)
+
 
 def verify(tree, c):
     """Checks the result independently of how the edits were made."""
@@ -1999,6 +2014,7 @@ def verify(tree, c):
     verify_verified_badge(sources)
     verify_help_section(sources)
     verify_login_code_screens(sources)
+    verify_update_prompts(tree, c, sources)
 
 
 
@@ -4114,6 +4130,163 @@ def verify_login_code_screens(sources):
             raise PatchError(f"{AUTH_CODE}: {s} is still there; a code in Telegram is no Fragment code")
 
 
+# --- updates of an open tab -----------------------------------------------------
+#
+# A release of the site reaches a tab that stays open within the hour, and the
+# operator can make one mandatory (the owner's decision of 2026-11-13). Upstream
+# asks the site's `version` every 30 minutes and shows its Update button when it
+# differs from the running one (sidebarLeft/index.ts, CHECK_UPDATE_INTERVAL), but
+# every Pluma build of one upstream commit is the same "2.3 (686)": the build is
+# this repository's commit instead, in the site as pluma-version, a name without
+# an extension the service worker caches (requestCache of serviceWorker/index.service.ts
+# takes .js, .json and the like). A build of a higher PLUMA_REQUIRED_EPOCH
+# (config/app.env) than the tab's is a mandatory release: the tab goes under the
+# screen of a tab that cannot go on (pages/deactivatedScreen.ts, upstream's for a
+# newer version in another tab), which reloads it however it is closed.
+
+RELEASE_FILE = "public/pluma-version"
+UPDATE_SIDEBAR = "src/components/sidebarLeft/index.ts"
+SERVICE_WORKER = "src/lib/serviceWorker/index.service.ts"
+# The files of the site the service worker answers from its cache.
+SERVICE_WORKER_CACHED = r"/\.(js|css|jpe?g|json|wasm|png|mp3|svg|tgs|ico|woff2?|ttf)(?:\?.*)?$/"
+UPDATE_APP = "src/config/app.ts"
+UPDATE_STRINGS = (
+    ("Pluma.Update.Required.Title", "Update required"),
+    ("Pluma.Update.Required.Subtitle", "This version can no longer be used.\\nClick anywhere to reload this tab."),
+)
+UPDATE_STRING_LINES = tuple(f"  '{key}': '{value}'," for key, value in UPDATE_STRINGS)
+UPDATE_CHECK = (
+    "    {\n"
+    "      const CHECK_UPDATE_INTERVAL = 1800e3;\n"
+    "      const checkUpdateInterval = setInterval(() => {\n"
+    "        fetch('version', {cache: 'no-cache'})\n"
+    "        .then((res) => (res.status === 200 && res.ok && res.text()) || Promise.reject())\n"
+    "        .then((text) => {\n"
+    "          if(text !== App.versionFull) {\n"
+    "            this.hasUpdate = true;\n"
+    "            clearInterval(checkUpdateInterval);\n"
+    "\n"
+    "            if(!this.newBtnMenu.classList.contains('is-hidden')) {\n"
+    "              this.updateBtn.classList.remove('is-hidden');\n"
+    "            }\n"
+    "          }\n"
+    "        })\n"
+    "        .catch(noop);\n"
+    "      }, CHECK_UPDATE_INTERVAL);\n"
+    "    }\n",
+    "    {\n"
+    "      // pluma: a release of the site is a build of Pluma's, while every build of one Web K is the same `version`:\n"
+    "      // the page compares its build with the site's pluma-version (no extension, which the service worker would\n"
+    "      // cache), every 15 minutes and when it is shown again, a minute at least after the last time, so a release\n"
+    "      // reaches an open tab within the hour. Another build shows the Update button; one of a higher required epoch\n"
+    "      // (a mandatory release, ci/patch.py) leaves the tab under the screen of an updated version, closed by a reload\n"
+    "      const CHECK_UPDATE_INTERVAL = 900e3;\n"
+    "      const CHECK_UPDATE_AGAIN_AFTER = 60e3;\n"
+    "      let checkedAt = 0;\n"
+    "      let updateRequired = false;\n"
+    "      const checkUpdate = () => {\n"
+    "        if(updateRequired) {\n"
+    "          return;\n"
+    "        }\n"
+    "\n"
+    "        checkedAt = Date.now();\n"
+    "        fetch('pluma-version', {cache: 'no-cache'})\n"
+    "        .then((res) => (res.status === 200 && res.ok && res.json()) || Promise.reject())\n"
+    "        .then((deployed: {build?: unknown, epoch?: unknown}) => {\n"
+    "          if(updateRequired || typeof(deployed?.build) !== 'string' || deployed.build === App.plumaBuild) {\n"
+    "            return;\n"
+    "          }\n"
+    "\n"
+    "          if(typeof(deployed.epoch) === 'number' && deployed.epoch > App.plumaRequiredEpoch) {\n"
+    "            updateRequired = true;\n"
+    "            clearInterval(checkUpdateInterval);\n"
+    "            showDeactivatedScreen({\n"
+    "              title: 'Pluma.Update.Required.Title',\n"
+    "              subtitle: 'Pluma.Update.Required.Subtitle',\n"
+    "              onClick: () => appNavigationController.reload()\n"
+    "            });\n"
+    "            return;\n"
+    "          }\n"
+    "\n"
+    "          this.hasUpdate = true;\n"
+    "          if(!this.newBtnMenu.classList.contains('is-hidden')) {\n"
+    "            this.updateBtn.classList.remove('is-hidden');\n"
+    "          }\n"
+    "        })\n"
+    "        .catch(noop);\n"
+    "      };\n"
+    "      const checkUpdateInterval = setInterval(checkUpdate, CHECK_UPDATE_INTERVAL);\n"
+    "      const onShown = () => {\n"
+    "        if(document.visibilityState === 'visible' && Date.now() - checkedAt >= CHECK_UPDATE_AGAIN_AFTER) {\n"
+    "          checkUpdate();\n"
+    "        }\n"
+    "      };\n"
+    "      document.addEventListener('visibilitychange', onShown);\n"
+    "      window.addEventListener('focus', onShown);\n"
+    "    }\n",
+)
+UPDATE_IMPORT = (
+    "import App, {getAppVersionText} from '@config/app';\n",
+    "import App, {getAppVersionText} from '@config/app';\n"
+    "import {showDeactivatedScreen} from '@/pages/deactivatedScreen';\n",
+)
+UPDATE_LANG_ANCHOR = ("  'Deactivated.LoadFailed.Subtitle': 'Part of the app could not be downloaded. Check your connection."
+                      "\\nClick anywhere to reload this tab.',\n")
+
+
+def update_app_edit(c):
+    return ("  build: +import.meta.env.VITE_BUILD,\n",
+            "  build: +import.meta.env.VITE_BUILD,\n"
+            "  // pluma: the release of the site this page is (ci/patch.py, update_prompts)\n"
+            f"  plumaBuild: '{c.build_id}',\n"
+            f"  plumaRequiredEpoch: {c.required_epoch},\n")
+
+
+def release_file(c):
+    return json.dumps({"build": c.build_id, "epoch": c.required_epoch}) + "\n"
+
+
+def update_prompts(tree, c):
+    # What the edits rely on: the screen and the reload they call, and the
+    # button they show.
+    tree.expect("src/pages/deactivatedScreen.ts", "export function showDeactivatedScreen({title, subtitle, onClick}: DeactivatedScreen) {\n")
+    tree.expect("src/pages/deactivatedScreen.ts", "    closable: true,\n    onClose: onClick,\n")
+    tree.expect(UPDATE_SIDEBAR, "import appNavigationController, {NavigationItem} from '@components/appNavigationController';\n")
+    tree.expect(UPDATE_SIDEBAR, "      appNavigationController.reload();\n    });\n\n    sidebarHeader.nextElementSibling.append(this.updateBtn);\n")
+    # The site's file: one the build keeps (ci/build.sh publishes what
+    # keepAsset.js names) and the service worker does not cache.
+    tree.expect("keepAsset.js", "    || asset.includes('version')\n")
+    tree.expect(SERVICE_WORKER, f"    event.request.url.match({SERVICE_WORKER_CACHED})\n")
+    if (tree.root / RELEASE_FILE).exists():
+        raise PatchError(f"{RELEASE_FILE}: upstream ships one now; review what it is")
+    for rel, old, new in (UPDATE_SIDEBAR, *UPDATE_CHECK), (UPDATE_SIDEBAR, *UPDATE_IMPORT), (UPDATE_APP, *update_app_edit(c)):
+        tree.replace(rel, old, new)
+    tree.replace("src/lang.ts", UPDATE_LANG_ANCHOR,
+                 UPDATE_LANG_ANCHOR + "".join(line + "\n" for line in UPDATE_STRING_LINES))
+    tree.write(RELEASE_FILE, release_file(c))
+
+
+def verify_update_prompts(tree, c, sources):
+    for rel, old, new in (UPDATE_SIDEBAR, *UPDATE_CHECK), (UPDATE_SIDEBAR, *UPDATE_IMPORT), (UPDATE_APP, *update_app_edit(c)):
+        text = sources[rel]
+        if text.count(new) != 1 or old in text.replace(new, ""):
+            raise PatchError(f"{rel}: the edit of the update prompts is not there")
+    lines = sources["src/lang.ts"].split("\n")
+    for line in UPDATE_STRING_LINES:
+        if lines.count(line) != 1:
+            raise PatchError(f"src/lang.ts: {line.strip()[:60]!r} is not there once")
+    # Nothing else asks the site for its build: upstream's own check, moved,
+    # would compare a version that never changes here.
+    for rel, text in sources.items():
+        if re.search(r"fetch\(\s*['\"`](?:\./)?version['\"`]", text):
+            raise PatchError(f"{rel}: asks the site's version, which the update prompts replace")
+        if len(re.findall(r"['\"`](?:\./)?pluma-version['\"`]", text)) != (rel == UPDATE_SIDEBAR):
+            raise PatchError(f"{rel}: asks pluma-version, which only the update prompts may")
+    release = tree.root / RELEASE_FILE
+    if not release.is_file() or release.read_text(encoding="utf-8") != release_file(c):
+        raise PatchError(f"{RELEASE_FILE}: not the release of this build")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--source", required=True, help="the tweb checkout")
@@ -4122,10 +4295,11 @@ def main(argv=None):
     ap.add_argument("--server-url", required=True, help="the WebSocket URL of the server, wss://<host>/apiws")
     ap.add_argument("--rsa-public-key", required=True, help="PKCS#1 PEM of the server key")
     ap.add_argument("--target", required=True, help="server or dev (recorded for ci/build.sh)")
+    ap.add_argument("--build-id", required=True, help="the commit of this repository the build is made from")
     a = ap.parse_args(argv)
     try:
         c = Config(load_env(a.upstream), load_env(a.app), a.server_url,
-                   pathlib.Path(a.rsa_public_key).read_text(), a.target)
+                   pathlib.Path(a.rsa_public_key).read_text(), a.target, a.build_id)
         tree = Tree(a.source)
         patch(tree, c)
         verify(tree, c)

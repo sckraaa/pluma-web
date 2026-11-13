@@ -3,7 +3,7 @@
 
 The site must carry what ci/patch.py applied to the checkout (the server
 URL and key, the api_hash, the layer, the app's name, icons and plm://
-sign-in link) and no trace of
+sign-in link, the release open tabs compare theirs with) and no trace of
 Telegram's servers: no datacenter address, no MTProto endpoint of
 Telegram's web clients, no server key or credential of Telegram's
 deployments. Every file is read, source maps included: they are published
@@ -99,6 +99,16 @@ def check(site, record, target):
         raise PatchError("version: not in the site")
     for p in sorted((site / "changelogs").glob(f"*_{version.read_text().split()[0]}.md")):
         raise PatchError(f"changelogs/{p.name}: upstream's message about this version is in the site")
+    # The release an open tab compares its own with (update_prompts of
+    # ci/patch.py): this build's, which the code carries too.
+    try:
+        release = json.loads((site / "pluma-version").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise PatchError(f"pluma-version: {e}")
+    if release != {"build": record["build_id"], "epoch": record["required_epoch"]}:
+        raise PatchError(f"pluma-version: {release}, not the release of this build")
+    if f"'{record['build_id']}'" not in code.replace('"', "'").replace("`", "'"):
+        raise PatchError(f"the code does not carry its build {record['build_id'][:12]}")
     if f"Sign in to {name}" not in code or "Sign in to Telegram" in code or "Scan with Telegram" in code:
         raise PatchError(f"the code's sign-in page does not say {name}")
     if "plm://login?token=" not in code or "tg://login" in code:

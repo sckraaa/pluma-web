@@ -67,6 +67,9 @@ mYMNNrfzbwRjZeV714GXl0lT5km9M59gELCLwoFVOeKaLC400rX9AgMBAAE=
 
 DEV_KEY = (ROOT / "config/dev/server_public.pem").read_text()
 
+# The commit of this repository a build is made from (ci/configure.sh).
+BUILD_ID = "4f1c0d3b9a8e7f6a5b4c3d2e1f0a9b8c7d6e5f40"
+
 
 def fingerprint(pem):
     return patch.key_fingerprint(*patch.parse_pkcs1_public_key(pem))
@@ -159,7 +162,7 @@ class NodeEnginesTest(unittest.TestCase):
 def config(**over):
     upstream = patch.load_env(ROOT / "upstream.env")
     app = patch.load_env(ROOT / "config/app.env")
-    args = dict(server_url="wss://pluma.chat/apiws", rsa_pem=DEV_KEY, target="server")
+    args = dict(server_url="wss://pluma.chat/apiws", rsa_pem=DEV_KEY, target="server", build_id=BUILD_ID)
     args.update(over.pop("args", {}))
     upstream.update(over.pop("upstream", {}))
     app.update(over.pop("app", {}))
@@ -173,6 +176,9 @@ class ConfigTest(unittest.TestCase):
         self.assertRegex(c.api_hash, r"\A[0-9a-f]{32}\Z")
         self.assertEqual(c.fingerprint, 14037083214707814241)
         self.assertEqual(len(c.modulus), 512)
+        self.assertEqual((c.build_id, c.required_epoch), (BUILD_ID, 0))
+        self.assertEqual(config(app={"PLUMA_REQUIRED_EPOCH": "3"}).required_epoch, 3)
+        self.assertEqual(config(args={"build_id": "a" * 64}).build_id, "a" * 64)
         dev = patch.load_env(ROOT / "config/dev/server.env")
         self.assertEqual(patch.parse_server_url(dev["PLUMA_SERVER_URL"]), "ws://localhost:11443/apiws")
 
@@ -189,6 +195,15 @@ class ConfigTest(unittest.TestCase):
             {"app": {"PLUMA_APP_NAME": "<Pluma>"}},
             {"upstream": {"UPSTREAM_LAYER": ""}},
             {"upstream": {"NODE_VERSION": "lts"}},
+            {"args": {"build_id": ""}},
+            {"args": {"build_id": BUILD_ID[:12]}},
+            {"args": {"build_id": BUILD_ID.upper()}},
+            {"args": {"build_id": BUILD_ID + "\n"}},
+            {"app": {"PLUMA_REQUIRED_EPOCH": ""}},
+            {"app": {"PLUMA_REQUIRED_EPOCH": "-1"}},
+            {"app": {"PLUMA_REQUIRED_EPOCH": "01"}},
+            {"app": {"PLUMA_REQUIRED_EPOCH": "1.5"}},
+            {"app": {"PLUMA_REQUIRED_EPOCH": "1" * 10}},
         ):
             with self.subTest(over=over), self.assertRaises(patch.PatchError):
                 config(**over)
@@ -311,7 +326,8 @@ class TreeTest(unittest.TestCase):
 
 # What the patch reads, from the commit upstream.env pins.
 UPSTREAM_PATHS = ("src", "public/version", "public/site.webmanifest", "public/site_apple.webmanifest",
-                  "public/browserconfig.xml", "public/assets/img", "public/changelogs", "package.json", "index.html", "vite.config.ts")
+                  "public/browserconfig.xml", "public/assets/img", "public/changelogs", "package.json", "index.html", "vite.config.ts",
+                  "keepAsset.js")
 
 THEME = "src/helpers/themeController.ts"
 STATE = "src/config/state.ts"
@@ -645,6 +661,19 @@ DAMAGE = (
     *((rel, text, damaged(text)) for rel, text, _ in patch.E2E_GROUP_CALL_RELIES_ON),
     # The colours of calls.
     *((rel, old, damaged(old)) for rel, old, _ in patch.CALL_COLOR_EDITS),
+    # The update prompts: the check they replace, the places of the import,
+    # the build and the strings, and the screen and the button they use.
+    (patch.UPDATE_SIDEBAR, patch.UPDATE_CHECK[0], damaged(patch.UPDATE_CHECK[0])),
+    (patch.UPDATE_SIDEBAR, patch.UPDATE_IMPORT[0], damaged(patch.UPDATE_IMPORT[0])),
+    (patch.UPDATE_APP, "  build: +import.meta.env.VITE_BUILD,\n", "  build: +import.meta.env.VITE_BUILD_NUMBER,\n"),
+    ("src/lang.ts", patch.UPDATE_LANG_ANCHOR, damaged(patch.UPDATE_LANG_ANCHOR)),
+    ("src/pages/deactivatedScreen.ts", "    closable: true,\n    onClose: onClick,\n", "    closable: false,\n    onClose: onClick,\n"),
+    ("src/pages/deactivatedScreen.ts", "export function showDeactivatedScreen({title, subtitle, onClick}",
+     "export function showDeactivatedScreen({title, subtitle, onClick, closable}"),
+    (patch.UPDATE_SIDEBAR, "      appNavigationController.reload();\n    });\n\n    sidebarHeader.nextElementSibling.append(this.updateBtn);\n",
+     "      appNavigationController.reload(true);\n    });\n\n    sidebarHeader.nextElementSibling.append(this.updateBtn);\n"),
+    ("keepAsset.js", "    || asset.includes('version')\n", "    || asset.includes('version/')\n"),
+    (patch.SERVICE_WORKER, "event.request.url.match(/\\.(js|css", "event.request.url.match(/\\.(js|html|css"),
 )
 
 
@@ -1099,6 +1128,97 @@ class UpstreamTest(unittest.TestCase):
                     patch.verify(tree, c)
                 (self.root / rel).write_text(text, encoding="utf-8")
 
+    def test_update_prompts(self):
+        tree, c = self.run_patch()
+        side = tree.read(patch.UPDATE_SIDEBAR)
+        self.assertNotIn("fetch('version'", side)
+        self.assertIn("        fetch('pluma-version', {cache: 'no-cache'})\n", side)
+        self.assertIn("      const CHECK_UPDATE_INTERVAL = 900e3;\n", side)
+        self.assertIn("deployed.build === App.plumaBuild", side)
+        self.assertIn("deployed.epoch > App.plumaRequiredEpoch", side)
+        self.assertIn("      document.addEventListener('visibilitychange', onShown);\n"
+                      "      window.addEventListener('focus', onShown);\n", side)
+        self.assertIn("import {showDeactivatedScreen} from '@/pages/deactivatedScreen';\n", side)
+        app = tree.read(patch.UPDATE_APP)
+        self.assertIn(f"  plumaBuild: '{BUILD_ID}',\n  plumaRequiredEpoch: 0,\n", app)
+        lang = tree.read("src/lang.ts")
+        self.assertIn("  'Pluma.Update.Required.Title': 'Update required',\n", lang)
+        self.assertIn("  'Pluma.Update.Required.Subtitle': 'This version can no longer be used.\\nClick anywhere to reload "
+                      "this tab.',\n", lang)
+        release = json.loads(tree.read(patch.RELEASE_FILE))
+        self.assertEqual(release, {"build": BUILD_ID, "epoch": 0})
+        # The site's file is one upstream's build keeps (keepAsset.js, which
+        # ci/build.sh follows), and one the service worker does not cache.
+        name = pathlib.PurePath(patch.RELEASE_FILE).name
+        self.assertIn("version", name)
+        self.assertIsNone(re.search(patch.SERVICE_WORKER_CACHED.strip("/"), "https://web.pluma.chat/" + name))
+        self.assertIsNotNone(re.search(patch.SERVICE_WORKER_CACHED.strip("/"), "https://web.pluma.chat/a.json?1"))
+        # A mandatory release: the epoch of config/app.env in the build and the site.
+        self.tearDown()
+        c = config(app={"PLUMA_REQUIRED_EPOCH": "2"})
+        tree = RecordingTree(self.root, self.written)
+        patch.patch(tree, c)
+        patch.verify(tree, c)
+        self.assertIn("  plumaRequiredEpoch: 2,\n", tree.read(patch.UPDATE_APP))
+        self.assertEqual(json.loads(tree.read(patch.RELEASE_FILE)), {"build": BUILD_ID, "epoch": 2})
+
+    def test_update_prompts_upstream_file(self):
+        # A file of that name from upstream is one the patch would overwrite.
+        self.written.add(patch.RELEASE_FILE)
+        (self.root / patch.RELEASE_FILE).write_text("{}\n", encoding="utf-8")
+        with self.assertRaisesRegex(patch.PatchError, "pluma-version"):
+            self.run_patch()
+
+    def test_update_prompts_verify(self):
+        tree, c = self.run_patch()
+        # Each edit, undone.
+        for rel, old, new in ((patch.UPDATE_SIDEBAR, *patch.UPDATE_CHECK), (patch.UPDATE_SIDEBAR, *patch.UPDATE_IMPORT),
+                              (patch.UPDATE_APP, *patch.update_app_edit(c))):
+            with self.subTest(rel=rel, new=new[:60]):
+                text = tree.read(rel)
+                (self.root / rel).write_text(text.replace(new, old), encoding="utf-8")
+                with self.assertRaisesRegex(patch.PatchError, rel):
+                    patch.verify(tree, c)
+                (self.root / rel).write_text(text, encoding="utf-8")
+        side = tree.read(patch.UPDATE_SIDEBAR)
+        lang = tree.read("src/lang.ts")
+        app = tree.read(patch.UPDATE_APP)
+        other = "src/components/sidebarLeft/tabs/settings.tsx"
+        settings = tree.read(other)
+        for rel, text, damaged_text, error in (
+            # Upstream's check back, somewhere else.
+            (other, settings, settings + "fetch('version', {cache: 'no-cache'});\n", "asks the site's version"),
+            (other, settings, settings + 'fetch(\n  "./version");\n', "asks the site's version"),
+            # Another reader of the release.
+            (other, settings, settings + "fetch('pluma-version');\n", "only the update prompts"),
+            (other, settings, settings + 'fetch(`./pluma-version`);\n', "only the update prompts"),
+            # A string gone, and one twice.
+            ("src/lang.ts", lang, lang.replace(patch.UPDATE_STRING_LINES[0] + "\n", ""), "Pluma.Update.Required.Title"),
+            ("src/lang.ts", lang, lang.replace(patch.UPDATE_STRING_LINES[1] + "\n", patch.UPDATE_STRING_LINES[1] + "\n" * 2
+                                               + patch.UPDATE_STRING_LINES[1] + "\n"), "Pluma.Update.Required.Subtitle"),
+            # The build of another commit or epoch in the code.
+            (patch.UPDATE_APP, app, app.replace(BUILD_ID, "f" * 40), "app.ts"),
+            (patch.UPDATE_APP, app, app.replace("plumaRequiredEpoch: 0,", "plumaRequiredEpoch: 1,"), "app.ts"),
+            # The sidebar's check twice.
+            (patch.UPDATE_SIDEBAR, side, side + patch.UPDATE_CHECK[1], "update prompts"),
+        ):
+            with self.subTest(error=error, rel=rel):
+                (self.root / rel).write_text(damaged_text, encoding="utf-8")
+                with self.assertRaisesRegex(patch.PatchError, error):
+                    patch.verify(tree, c)
+                (self.root / rel).write_text(text, encoding="utf-8")
+        # The site's release: of another build or epoch, or gone.
+        release = self.root / patch.RELEASE_FILE
+        for text in (json.dumps({"build": "f" * 40, "epoch": 0}) + "\n", json.dumps({"build": BUILD_ID, "epoch": 1}) + "\n", None):
+            with self.subTest(release=text):
+                if text is None:
+                    release.unlink()
+                else:
+                    release.write_text(text, encoding="utf-8")
+                with self.assertRaisesRegex(patch.PatchError, "pluma-version"):
+                    patch.verify(tree, c)
+                release.write_text(patch.release_file(c), encoding="utf-8")
+
     def test_verified_badge(self):
         tree, c = self.run_patch()
         # The rosette is the accent, sage in Pluma's themes, and its check
@@ -1502,10 +1622,12 @@ class BundleTest(unittest.TestCase):
                    "var f=[`http`,`noMultipleTransports`];var w=b(`http`)?`http`:b(`noMultipleTransports`)?`websocket`:`auto`;"
                    "var h=u.startsWith(`http`);"
                    "var l={\"Login.Title\":`Sign in to Pluma`};"
-                   "var q=`plm://login?token=`+o;")
+                   "var q=`plm://login?token=`+o;"
+                   f"var r={{plumaBuild:\"{BUILD_ID}\",plumaRequiredEpoch:0}};")
         self.write("index.worker-abc.js.map", json.dumps({"sourcesContent": ["// see https://web.telegram.org/a/"]}))
         self.write("assets/img/logo.png", b"\x89PNG\r\n\x1a\n\x00\x01")
         self.write("version", "2.3 (686)\n")
+        self.write("pluma-version", json.dumps({"build": BUILD_ID, "epoch": 0}) + "\n")
         for rel, _ in patch.ICONS:
             self.write(rel, (patch.BRAND / "web" / rel).read_bytes())
 
@@ -1523,7 +1645,7 @@ class BundleTest(unittest.TestCase):
         return check_bundle.check(self.site, self.record, target)
 
     def test_good(self):
-        self.assertEqual(self.check(), 7 + len(patch.ICONS))
+        self.assertEqual(self.check(), 8 + len(patch.ICONS))
 
     def test_rejects(self):
         url = self.record["server_url"]
@@ -1545,6 +1667,11 @@ class BundleTest(unittest.TestCase):
             (patch.SCREENSHOT[0], b"\xff\xd8\xff\xe0"),
             ("h.js", "var l={\"Login.Title\":`Sign in to Telegram`};"),
             ("i.js", "var q=`tg://login?token=`+o;"),
+            # The release of another build or epoch, or none that reads.
+            ("pluma-version", json.dumps({"build": "f" * 40, "epoch": 0})),
+            ("pluma-version", json.dumps({"build": BUILD_ID, "epoch": 1})),
+            ("pluma-version", json.dumps({"build": BUILD_ID, "epoch": 0, "extra": 1})),
+            ("pluma-version", "{"),
         ):
             with self.subTest(rel=rel):
                 self.tearDown()
@@ -1557,7 +1684,7 @@ class BundleTest(unittest.TestCase):
         code = (self.site / "index.worker-abc.js").read_text()
         for gone in (self.record["server_url"], self.record["modulus"], self.record["api_hash"], "layer:233",
                      "Sign in to Pluma",
-                     "plm://login?token="):
+                     "plm://login?token=", BUILD_ID):
             with self.subTest(gone=gone[:30]):
                 self.write("index.worker-abc.js", code.replace(gone, "x"))
                 with self.assertRaises(patch.PatchError):
@@ -1569,6 +1696,10 @@ class BundleTest(unittest.TestCase):
         self.write(patch.ICONS[0][0], (patch.BRAND / "web" / patch.ICONS[0][0]).read_bytes())
         (self.site / "index.html").unlink()
         with self.assertRaises(patch.PatchError):
+            self.check()
+        self.write("index.html", "<!DOCTYPE html><html><head><title>Pluma</title></head></html>")
+        (self.site / "pluma-version").unlink()
+        with self.assertRaisesRegex(patch.PatchError, "pluma-version"):
             self.check()
 
     def test_rejects_other_target(self):
