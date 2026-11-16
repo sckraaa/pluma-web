@@ -674,6 +674,11 @@ DAMAGE = (
      "      appNavigationController.reload(true);\n    });\n\n    sidebarHeader.nextElementSibling.append(this.updateBtn);\n"),
     ("keepAsset.js", "    || asset.includes('version')\n", "    || asset.includes('version/')\n"),
     (patch.SERVICE_WORKER, "event.request.url.match(/\\.(js|css", "event.request.url.match(/\\.(js|html|css"),
+    # The HTTPS CDN: each edit, what the edits rely on, and a page policy that
+    # restricts connections.
+    *((rel, old, damaged(old)) for rel, old, _ in patch.CDN_HTTPS_EDITS),
+    *((rel, text, damaged(text)) for rel, text in patch.CDN_HTTPS_RELIES_ON),
+    ("index.html", "base-uri 'self'\">", "base-uri 'self'; connect-src 'self'\">"),
 )
 
 
@@ -1588,6 +1593,109 @@ class UpstreamTest(unittest.TestCase):
                     patch.verify(tree, c)
                 (self.root / rel).write_text(text, encoding="utf-8")
         patch.verify(tree, c)
+
+    def test_cdn_https(self):
+        tree, c = self.run_patch()
+        self.assertEqual(tree.read(patch.CDN_HTTPS), patch.CDN_HTTPS_TS)
+        self.assertIn("const DEV_HTTP_HOST = '';\n", tree.read(patch.CDN_HTTPS))
+        files = tree.read(patch.API_FILE_MANAGER)
+        for s in ("import CdnHttps from '@appManagers/cdnHttps';\n",
+                  "  private cdnHttps = new CdnHttps((...args: any[]) => this.log(...args));\n",
+                  "      callback: () => this.cdnHttps.requestFilePart({\n",
+                  "          cdn_supported: cdnSupported || undefined\n",
+                  "        getHashes: (fileToken, hashesOffset) => this.apiManager.invokeApi('upload.getCdnFileHashes', {\n",
+                  "    size?: number,\n",
+                  "            size // pluma: for the HTTPS CDN (cdnHttps.ts)\n"):
+            self.assertIn(s, files)
+        # The queue and the file references stay as upstream has them.
+        self.assertEqual(files.count("    const cb = () => this.invokeApiWithReference({\n"), 1)
+        self.assertIn("      size: doc.size, // pluma: for the HTTPS CDN (cdnHttps.ts)\n", tree.read(patch.DOCS_MANAGER))
+        self.assertIn("            params: {_: 'jsonObject', value: [{_: 'jsonObjectValue', key: 'pluma_cdn', "
+                      "value: {_: 'jsonNumber', value: 1}}]},\n", tree.read(patch.NETWORKER))
+        # The code of the file: no cache, no cookies, no redirect followed, the
+        # response checked, the IV's counter and the hash before the bytes.
+        code = patch.CDN_HTTPS_TS
+        for s in ("cache: 'no-store'", "credentials: 'omit'", "redirect: 'manual'", "referrerPolicy: 'no-referrer'",
+                  "headers: {'Range': `bytes=${first}-${last}`}",
+                  "if(range?.trim() !== `bytes ${first}-${last}/${this.size}`) {",
+                  "if(status === 403 || status === 410) {", "const MAX_REFRESHES = 3;",
+                  "const FAILURES_TO_PAUSE = 3;", "const PAUSE = 10 * 60e3;",
+                  "const SILENCE_TIMEOUT = 10e3;", "const REQUEST_TIMEOUT = 30e3;",
+                  "{name: 'AES-CTR', counter: counter as BufferSource, length: 128}",
+                  "counter[12] = (n >>> 24) & 0xFF;", "counter[15] = n & 0xFF;",
+                  "subtle.digest('SHA-256', plain as BufferSource)"):
+            self.assertIn(s, code)
+        self.assertEqual(code.count(patch.CDN_HTTPS_DEV_HOST_LINE), 1)
+        self.assertNotIn("getCdnFile'", code)
+        self.assertNotIn("reuploadCdnFile'", code)
+
+    def test_cdn_https_of_a_development_build(self):
+        c = config(args={"server_url": "ws://localhost:11443/apiws", "target": "dev"})
+        tree = RecordingTree(self.root, self.written)
+        patch.patch(tree, c)
+        patch.verify(tree, c)
+        text = tree.read(patch.CDN_HTTPS)
+        self.assertIn("const DEV_HTTP_HOST = 'localhost';\n", text)
+        self.assertEqual(text, patch.CDN_HTTPS_TS.replace("const DEV_HTTP_HOST = '';\n", "const DEV_HTTP_HOST = 'localhost';\n"))
+        self.assertIsNone(patch.cdn_https_dev_host(config()))
+        self.assertEqual(patch.cdn_https_dev_host(config(args={"server_url": "ws://[::1]:11443/apiws", "target": "dev"})), "[::1]")
+        # The development build's file in a server build stops it.
+        server = config(args={"server_url": "ws://localhost:11443/apiws"})
+        with self.assertRaisesRegex(patch.PatchError, "cdnHttps.ts: a server build takes http://"):
+            patch.verify(tree, server)
+
+    def test_cdn_https_is_verified(self):
+        tree, c = self.run_patch()
+        sw = patch.SERVICE_WORKER
+        for rel, old, new, error in (
+            (patch.CDN_HTTPS, "const DEV_HTTP_HOST = '';\n", "const DEV_HTTP_HOST = 'localhost';\n",
+             "cdnHttps.ts: a server build takes http://"),
+            (patch.CDN_HTTPS, "const MAX_REFRESHES = 3;", "const MAX_REFRESHES = 30;",
+             "cdnHttps.ts: not the client's HTTPS CDN code"),
+            (patch.API_FILE_MANAGER, "          cdn_supported: cdnSupported || undefined\n", "          cdn_supported: true\n",
+             "apiFileManager.ts: the edit of the HTTPS CDN is not there"),
+            (patch.DOCS_MANAGER, "      size: doc.size, // pluma: for the HTTPS CDN (cdnHttps.ts)\n", "",
+             "appDocsManager.ts: the edit of the HTTPS CDN is not there"),
+            (patch.NETWORKER, "            // pluma: this client takes large files", "            params: undefined,\n            // pluma: this client takes large files",
+             "networker.ts: the edit of the HTTPS CDN is not there"),
+            ("src/lib/appManagers/appPhotosManager.ts", "export class AppPhotosManager", "const f = {cdn_supported: true};\nexport class AppPhotosManager",
+             "appPhotosManager.ts: 1 uses of cdn_supported"),
+            ("src/lib/appManagers/appPhotosManager.ts", "export class AppPhotosManager",
+             "const m = 'upload.reuploadCdnFile';\nexport class AppPhotosManager",
+             "appPhotosManager.ts: sends a method of a CDN datacenter"),
+            (sw, "      case 'ping': {\n", "      case 'o': {\n        break;\n      }\n\n      case 'ping': {\n",
+             "index.service.ts: routes /o/"),
+            ("index.html", "base-uri 'self'\">", "base-uri 'self'; connect-src 'self'\">",
+             "index.html: the page's policy restricts connections"),
+        ):
+            with self.subTest(error=error):
+                text = tree.read(rel)
+                self.assertEqual(text.count(old), 1)
+                (self.root / rel).write_text(text.replace(old, new, 1), encoding="utf-8")
+                self.written.add(rel)
+                with self.assertRaisesRegex(patch.PatchError, error):
+                    patch.verify(tree, c)
+                (self.root / rel).write_text(text, encoding="utf-8")
+        patch.verify(tree, c)
+
+    def test_cdn_https_logs_no_secret(self):
+        # A log line of the HTTPS code that names the URL stops the patch,
+        # even when the code is the one ci/patch.py carries.
+        line = "      this.log('cdn https', this.host, status, 'offset', first);\n"
+        self.assertEqual(patch.CDN_HTTPS_TS.count(line), 1)
+        for bad in ("this.url", "this.fileToken", "body.length"):
+            with self.subTest(bad=bad):
+                self.tearDown()
+                ts = patch.CDN_HTTPS_TS.replace(line, line.replace("this.host", bad))
+                with mock.patch.object(patch, "CDN_HTTPS_TS", ts), \
+                        self.assertRaisesRegex(patch.PatchError, "cdnHttps.ts: a log line names"):
+                    self.run_patch()
+
+    def test_cdn_https_file_is_new(self):
+        self.written.add(patch.CDN_HTTPS)
+        (self.root / patch.CDN_HTTPS).write_text("export default class CdnHttps {}\n")
+        with self.assertRaisesRegex(patch.PatchError, "cdnHttps.ts: upstream has a file of that name"):
+            self.run_patch()
 
     def test_saved_tags_file_of_upstream(self):
         self.written.add(SAVED_TAGS)
