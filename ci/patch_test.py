@@ -588,6 +588,8 @@ DAMAGE = (
     (patch.SETTINGS, "import askQuestion, {openTelegramFaq} from '@components/askQuestion';",
      "import askQuestion, {openTelegramFaq as openFaq} from '@components/askQuestion';"),
     (patch.SETTINGS, "{/* help, the way tdesktop ends its main settings */}", "{/* help */}"),
+    # Telegram Business (task 105): the sale block the row leaves, and the ads switch.
+    *((rel, old, old[:-2] + "~" + old[-1]) for rel, old, _ in patch.BUSINESS_EDITS),
     # Telegram's site on the screens a user reaches.
     ("src/lang.ts", "[Android](https://telegram.org/android)", "[Android](https://telegram.org/apk)"),
     ("src/components/sidebarLeft/tabs/chatAutomation.tsx", "learnMoreAnchor.href = 'https://telegram.org';",
@@ -1709,6 +1711,88 @@ class BundleTest(unittest.TestCase):
     def test_rejects_empty(self):
         with tempfile.TemporaryDirectory() as d, self.assertRaises(patch.PatchError):
             check_bundle.check(d, self.record, "server")
+
+
+class BusinessTest(unittest.TestCase):
+    """The Business row is outside the sale and in the search; the ads switch is gone (task 105)."""
+
+    # The places as upstream writes them, shortened around the anchors.
+    PLACES = {
+        patch.SETTINGS: (patch.BUSINESS_EDITS[0][1]
+                         + "          <Row clickable={() => showSendGiftPicker()}>\n          </Row>\n        </Section>\n      </Show>\n"),
+        patch.PROMO_SLIDE: (patch.BUSINESS_EDITS[1][1] + "export function PromoSlide() {\n  return (\n    <div>\n"
+                            + patch.BUSINESS_EDITS[2][1] + "    </div>\n  );\n}\n"),
+        patch.SETTINGS_SEARCH_OPENERS: "export const WALLET_ENTRIES = new Set([\n]);\n",
+    }
+
+    def tree(self, root, files=None):
+        (root / "src/lib/mtproto").mkdir(parents=True, exist_ok=True)
+        (root / "src/lib/mtproto/dcConfigurator.ts").write_text("")
+        for rel, text in (files or self.PLACES).items():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_text(text, encoding="utf-8")
+        return patch.Tree(root)
+
+    def sources(self, tree):
+        return {rel: tree.read(rel) for rel in self.PLACES}
+
+    def test_search_lists_the_row(self):
+        self.assertNotIn("TelegramBusiness", patch.SETTINGS_SEARCH_SALE_ROWS)
+
+    def test_patch_and_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            tree = self.tree(pathlib.Path(d))
+            with self.assertRaisesRegex(patch.PatchError, "the Business edit of task 105 is not there"):
+                patch.verify_business(self.sources(tree))
+            patch.business(tree)
+            patch.verify_business(self.sources(tree))
+            settings = tree.read(patch.SETTINGS)
+            self.assertLess(settings.index("showBusinessPopup()"), settings.index("<Show when={!premiumBlocked()}>"))
+            self.assertLess(settings.index("<Show when={!premiumBlocked()}>"), settings.index("showPremiumPopup()"))
+            self.assertEqual(settings.count("<Section>"), settings.count("</Section>"))
+            self.assertNotIn("SponsoredToggle", tree.read(patch.PROMO_SLIDE))
+            # A second run finds no upstream text.
+            with self.assertRaises(patch.PatchError):
+                patch.business(tree)
+
+    def test_upstream_changed(self):
+        for i, (rel, old, _) in enumerate(patch.BUSINESS_EDITS):
+            files = dict(self.PLACES)
+            files[rel] = files[rel].replace(old, old[:-2] + "~" + old[-1])
+            with self.subTest(edit=i), tempfile.TemporaryDirectory() as d:
+                tree = self.tree(pathlib.Path(d), files)
+                with self.assertRaisesRegex(patch.PatchError, "0 occurrences"):
+                    patch.business(tree)
+
+    def test_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            tree = self.tree(pathlib.Path(d))
+            patch.business(tree)
+            patched = self.sources(tree)
+            # Each edit taken back.
+            for rel, old, new in patch.BUSINESS_EDITS:
+                sources = dict(patched)
+                sources[rel] = (sources[rel].replace(new, old, 1) if new
+                                else old + sources[rel])
+                with self.subTest(edit=old[:40]), self.assertRaisesRegex(patch.PatchError, "is not there"):
+                    patch.verify_business(sources)
+            # The row back inside the sale, or listed twice.
+            for settings in (patched[patch.SETTINGS].replace("      {/* pluma:", "      <Show when={!premiumBlocked()}>\n      {/* pluma:", 1),
+                             patched[patch.SETTINGS] + patch.BUSINESS_ROW):
+                sources = dict(patched, **{patch.SETTINGS: settings})
+                with self.assertRaisesRegex(patch.PatchError, "is not outside the sale"):
+                    patch.verify_business(sources)
+            # The search drops it again, as task 074 did.
+            sources = dict(patched)
+            sources[patch.SETTINGS_SEARCH_OPENERS] += "  'AppSettingsTab:TelegramBusiness',\n"
+            with self.assertRaisesRegex(patch.PatchError, "the search drops the Business row"):
+                patch.verify_business(sources)
+            # The switch used somewhere else in the slide.
+            sources = dict(patched)
+            sources[patch.PROMO_SLIDE] += "<SponsoredToggle managers={managers} />\n"
+            with self.assertRaisesRegex(patch.PatchError, "the ads switch is still there"):
+                patch.verify_business(sources)
+            patch.verify_business(patched)
 
 
 class PremiumForEveryoneTest(unittest.TestCase):
