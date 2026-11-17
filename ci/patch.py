@@ -1849,6 +1849,7 @@ def patch(tree, c):
     # Premium stickers for every user.
     premium_stickers(tree)
     premium_for_everyone(tree)
+    business(tree)
     no_ai_editor(tree)
     service_account(tree)
     transcription(tree)
@@ -1981,6 +1982,7 @@ def verify(tree, c):
 
     verify_premium_stickers(tree, sources)
     verify_premium_for_everyone(tree)
+    verify_business(sources)
     verify_no_ai_editor(sources)
     verify_service_account(sources)
     verify_transcription(sources)
@@ -2117,7 +2119,7 @@ SETTINGS_SEARCH_REGISTRY = "src/lib/settingsSearch/registry.ts"
 # settings.tsx); its search has no such condition and would still list them. The
 # index is generated from the tabs when a build starts (settings-search-plugin),
 # so the rows are dropped where the index is read, as upstream drops the wallet's.
-SETTINGS_SEARCH_SALE_ROWS = ("Premium.Boarding.Title", "TelegramBusiness", "MenuTelegramStars",
+SETTINGS_SEARCH_SALE_ROWS = ("Premium.Boarding.Title", "MenuTelegramStars",
                              "MenuTelegramStarsTon", "Chat.Menu.SendGift")
 
 
@@ -2165,6 +2167,70 @@ def verify_premium_for_everyone(tree):
         text = tree.read(rel)
         if text.count(new) != 1 or old in text.replace(new, ""):
             raise PatchError(f"{rel}: the edit of task 071 is not there")
+
+
+# --- Telegram Business --------------------------------------------------------
+# Task 105 (ADR 0067): the server serves Telegram Business to everybody with
+# Premium (everybody, ADR 0041). Settings shows the Business row inside the
+# block of the sale (<Show when={!premiumBlocked()}>), which Pluma never shows;
+# the row moves to a section of its own before that block, and the settings
+# search lists it again (it is not in SETTINGS_SEARCH_SALE_ROWS). With Premium
+# the Business popup opens the editors (popups/premium.tsx). Its "Do not hide
+# ads" switch (SponsoredToggle) is gone: Pluma has no ads and does not serve
+# account.toggleSponsoredMessages.
+PROMO_SLIDE = "src/components/premium/promoSlide.tsx"
+BUSINESS_ROW = ("          <Row clickable={() => hotReloadGuard.showBusinessPopup()}>\n"
+                "            <Row.Icon icon=\"business_filled\" />\n"
+                "            <Row.Title>{i18n('TelegramBusiness')}</Row.Title>\n"
+                "          </Row>\n")
+BUSINESS_EDITS = (
+    (SETTINGS,
+     "      <Show when={!premiumBlocked()}>\n"
+     "        <Section>\n"
+     "          <Row clickable={() => hotReloadGuard.showPremiumPopup()}>\n"
+     "            <Row.Icon icon=\"premium_badge\" />\n"
+     "            <Row.Title>{i18n('Premium.Boarding.Title')}</Row.Title>\n"
+     "          </Row>\n" + BUSINESS_ROW,
+     "      {/* pluma: Business is served to everybody with Premium (ADR 0067); the rest is the sale. */}\n"
+     "      <Section>\n"
+     + "".join(line[2:] + "\n" for line in BUSINESS_ROW.splitlines()) +
+     "      </Section>\n"
+     "      <Show when={!premiumBlocked()}>\n"
+     "        <Section>\n"
+     "          <Row clickable={() => hotReloadGuard.showPremiumPopup()}>\n"
+     "            <Row.Icon icon=\"premium_badge\" />\n"
+     "            <Row.Title>{i18n('Premium.Boarding.Title')}</Row.Title>\n"
+     "          </Row>\n"),
+    (PROMO_SLIDE,
+     "import SponsoredToggle from '@components/premium/sponsoredToggle';\n",
+     ""),
+    (PROMO_SLIDE,
+     "        <Show when={props.data.type === 'business' && props.data.isPremiumActive}>\n"
+     "          <SponsoredToggle managers={props.data.managers} />\n"
+     "        </Show>\n",
+     "        {/* pluma: no ads to hide (ADR 0067), no switch. */}\n"),
+)
+
+
+def business(tree):
+    for rel, old, new in BUSINESS_EDITS:
+        tree.replace(rel, old, new)
+
+
+def verify_business(sources):
+    for rel, old, new in BUSINESS_EDITS:
+        if (new and sources[rel].count(new) != 1) or old in sources[rel]:
+            raise PatchError(f"{rel}: the Business edit of task 105 is not there")
+    # The row is outside the sale block, once, and its search entry is not dropped.
+    settings = sources[SETTINGS]
+    row = settings.find("hotReloadGuard.showBusinessPopup()")
+    sale = settings.find("      <Show when={!premiumBlocked()}>\n")
+    if settings.count("hotReloadGuard.showBusinessPopup()") != 1 or row < 0 or sale < 0 or row > sale:
+        raise PatchError(f"{SETTINGS}: the Business row is not outside the sale; read it")
+    if "'AppSettingsTab:TelegramBusiness'" in sources[SETTINGS_SEARCH_OPENERS]:
+        raise PatchError(f"{SETTINGS_SEARCH_OPENERS}: the search drops the Business row")
+    if "SponsoredToggle" in sources[PROMO_SLIDE]:
+        raise PatchError(f"{PROMO_SLIDE}: the ads switch is still there")
 
 
 # --- No AI message editor (task 079) ------------------------------------------
