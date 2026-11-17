@@ -1849,11 +1849,15 @@ def patch(tree, c):
     # Premium stickers for every user.
     premium_stickers(tree)
     premium_for_everyone(tree)
+    business(tree)
     no_ai_editor(tree)
     service_account(tree)
     transcription(tree)
     e2e_group_calls(tree)
     call_colors(tree)
+
+    # Large files from the server's HTTPS CDN.
+    cdn_https(tree, c)
 
     # Telegram's site off the screens a user reaches.
     for rel, old, new in TELEGRAM_SITE_EDITS:
@@ -1981,11 +1985,13 @@ def verify(tree, c):
 
     verify_premium_stickers(tree, sources)
     verify_premium_for_everyone(tree)
+    verify_business(sources)
     verify_no_ai_editor(sources)
     verify_service_account(sources)
     verify_transcription(sources)
     verify_e2e_group_calls(sources)
     verify_call_colors(sources)
+    verify_cdn_https(tree, c, sources)
 
     # Links: pluma.chat is a link host of the app, its exact host only, and
     # no Telegram link host is left but the ones LINK_KEEP knows.
@@ -2117,7 +2123,7 @@ SETTINGS_SEARCH_REGISTRY = "src/lib/settingsSearch/registry.ts"
 # settings.tsx); its search has no such condition and would still list them. The
 # index is generated from the tabs when a build starts (settings-search-plugin),
 # so the rows are dropped where the index is read, as upstream drops the wallet's.
-SETTINGS_SEARCH_SALE_ROWS = ("Premium.Boarding.Title", "TelegramBusiness", "MenuTelegramStars",
+SETTINGS_SEARCH_SALE_ROWS = ("Premium.Boarding.Title", "MenuTelegramStars",
                              "MenuTelegramStarsTon", "Chat.Menu.SendGift")
 
 
@@ -2165,6 +2171,70 @@ def verify_premium_for_everyone(tree):
         text = tree.read(rel)
         if text.count(new) != 1 or old in text.replace(new, ""):
             raise PatchError(f"{rel}: the edit of task 071 is not there")
+
+
+# --- Telegram Business --------------------------------------------------------
+# Task 105 (ADR 0067): the server serves Telegram Business to everybody with
+# Premium (everybody, ADR 0041). Settings shows the Business row inside the
+# block of the sale (<Show when={!premiumBlocked()}>), which Pluma never shows;
+# the row moves to a section of its own before that block, and the settings
+# search lists it again (it is not in SETTINGS_SEARCH_SALE_ROWS). With Premium
+# the Business popup opens the editors (popups/premium.tsx). Its "Do not hide
+# ads" switch (SponsoredToggle) is gone: Pluma has no ads and does not serve
+# account.toggleSponsoredMessages.
+PROMO_SLIDE = "src/components/premium/promoSlide.tsx"
+BUSINESS_ROW = ("          <Row clickable={() => hotReloadGuard.showBusinessPopup()}>\n"
+                "            <Row.Icon icon=\"business_filled\" />\n"
+                "            <Row.Title>{i18n('TelegramBusiness')}</Row.Title>\n"
+                "          </Row>\n")
+BUSINESS_EDITS = (
+    (SETTINGS,
+     "      <Show when={!premiumBlocked()}>\n"
+     "        <Section>\n"
+     "          <Row clickable={() => hotReloadGuard.showPremiumPopup()}>\n"
+     "            <Row.Icon icon=\"premium_badge\" />\n"
+     "            <Row.Title>{i18n('Premium.Boarding.Title')}</Row.Title>\n"
+     "          </Row>\n" + BUSINESS_ROW,
+     "      {/* pluma: Business is served to everybody with Premium (ADR 0067); the rest is the sale. */}\n"
+     "      <Section>\n"
+     + "".join(line[2:] + "\n" for line in BUSINESS_ROW.splitlines()) +
+     "      </Section>\n"
+     "      <Show when={!premiumBlocked()}>\n"
+     "        <Section>\n"
+     "          <Row clickable={() => hotReloadGuard.showPremiumPopup()}>\n"
+     "            <Row.Icon icon=\"premium_badge\" />\n"
+     "            <Row.Title>{i18n('Premium.Boarding.Title')}</Row.Title>\n"
+     "          </Row>\n"),
+    (PROMO_SLIDE,
+     "import SponsoredToggle from '@components/premium/sponsoredToggle';\n",
+     ""),
+    (PROMO_SLIDE,
+     "        <Show when={props.data.type === 'business' && props.data.isPremiumActive}>\n"
+     "          <SponsoredToggle managers={props.data.managers} />\n"
+     "        </Show>\n",
+     "        {/* pluma: no ads to hide (ADR 0067), no switch. */}\n"),
+)
+
+
+def business(tree):
+    for rel, old, new in BUSINESS_EDITS:
+        tree.replace(rel, old, new)
+
+
+def verify_business(sources):
+    for rel, old, new in BUSINESS_EDITS:
+        if (new and sources[rel].count(new) != 1) or old in sources[rel]:
+            raise PatchError(f"{rel}: the Business edit of task 105 is not there")
+    # The row is outside the sale block, once, and its search entry is not dropped.
+    settings = sources[SETTINGS]
+    row = settings.find("hotReloadGuard.showBusinessPopup()")
+    sale = settings.find("      <Show when={!premiumBlocked()}>\n")
+    if settings.count("hotReloadGuard.showBusinessPopup()") != 1 or row < 0 or sale < 0 or row > sale:
+        raise PatchError(f"{SETTINGS}: the Business row is not outside the sale; read it")
+    if "'AppSettingsTab:TelegramBusiness'" in sources[SETTINGS_SEARCH_OPENERS]:
+        raise PatchError(f"{SETTINGS_SEARCH_OPENERS}: the search drops the Business row")
+    if "SponsoredToggle" in sources[PROMO_SLIDE]:
+        raise PatchError(f"{PROMO_SLIDE}: the ads switch is still there")
 
 
 # --- No AI message editor (task 079) ------------------------------------------
@@ -4285,6 +4355,999 @@ def verify_update_prompts(tree, c, sources):
     release = tree.root / RELEASE_FILE
     if not release.is_file() or release.read_text(encoding="utf-8") != release_file(c):
         raise PatchError(f"{RELEASE_FILE}: not the release of this build")
+
+
+# --- HTTPS CDN (task 107 of the server repository, ADR 0071) ---------------------
+# Large files come over HTTPS from a CDN that only ever holds their ciphertext;
+# the key, the IV and the SHA-256 of every 128 KB come from the server over
+# MTProto. The client says it can do this with "pluma_cdn": 1 in the params of
+# initConnection (networker.ts:429-440 sends no params upstream), since the flag
+# cdn_supported is the server's signal to redirect and upstream never sets it
+# (apiFileManager.ts:480-492). upload.getFile of a document or a photo of a
+# known size carries cdn_supported while the file may use the CDN; the server
+# answers upload.fileCdnRedirect with a file_token "PLH1" | id[32] | expiry
+# uint32 BE | URL, and the part comes from the URL (cdnHttps.ts), decrypted and
+# checked before it is handed over as upload.file. The download queue
+# (apiFileManager.ts:495-502), the file references (invokeApiWithReference) and
+# the writers stay as upstream has them. The Service Worker streams through
+# requestDocPart, which now tells the file's size, as download() does.
+#
+# The worker fetches the URL cross-origin: the CDN must answer CORS
+# (Access-Control-Allow-Origin, and Access-Control-Expose-Headers with
+# Content-Range, without which the answer is refused and the part taken from
+# the server). The page's own policy (index.html) restricts no connection, and
+# the server's site sets none for the web client (teamgramd/deploy/web/Caddyfile
+# of the server repository): the check stops the build when upstream adds one.
+# A development build also takes http:// to the host of its server URL (the
+# stand on this machine); a server build takes https:// only.
+CDN_HTTPS = "src/lib/appManagers/cdnHttps.ts"
+API_FILE_MANAGER = "src/lib/appManagers/apiFileManager.ts"
+DOCS_MANAGER = "src/lib/appManagers/appDocsManager.ts"
+NETWORKER = "src/lib/mtproto/networker.ts"
+CDN_HTTPS_DEV_HOST_LINE = "const DEV_HTTP_HOST = '';\n"
+# The page's policy, which must leave connections to the CDN open.
+PAGE_POLICY = ('    <meta http-equiv="Content-Security-Policy" content="img-src \'self\' data: blob:; '
+               'media-src \'self\' data: blob:; font-src \'self\' data:; style-src \'self\' \'unsafe-inline\'; '
+               'form-action \'none\'; object-src \'none\'; base-uri \'self\'">\n')
+_POLICY_CONNECT = re.compile(r"Content-Security-Policy[^>]*\b(?:connect-src|default-src)\b", re.IGNORECASE)
+
+# The client's HTTPS code, a new file of the checkout.
+CDN_HTTPS_TS = r"""/*
+ * pluma: large files from the HTTPS CDN of the Pluma server (ADR 0071 of the server repository).
+ *
+ * The server tells a session that sent "pluma_cdn" in the params of initConnection (networker.ts)
+ * to take a file from its CDN: upload.getFile with cdn_supported answers upload.fileCdnRedirect
+ * whose file_token is "PLH1" | id[32] | expiry, uint32 big-endian | URL, UTF-8. The CDN holds only
+ * the ciphertext; the key, the IV and the SHA-256 of every 128 KB of plain text come from the
+ * server over MTProto, and upload.getCdnFileHashes gives the hashes the redirect did not carry.
+ * A part is fetched as an HTTP range of whole 128 KB blocks, decrypted as upload.cdnFile is
+ * (AES-256-CTR, bytes 12-15 of the IV = offset / 16) and handed over as upload.file only once
+ * every block matched its hash. 403 and 410 ask the server for a new URL, at most 3 times a
+ * file; any other failure takes the rest of the file from the server without cdn_supported,
+ * keeping what was loaded. The client never connects to the redirect's dc_id and never sends
+ * upload.getCdnFile or upload.reuploadCdnFile. 3 transport failures in a row (network, timeout,
+ * 5xx after a retry), each of another file, stop asking for the CDN for 10 minutes.
+ */
+
+import type {FileHash, InputFileLocation, UploadFile} from '@layer';
+import makeError from '@helpers/makeError';
+import subtle from '@lib/crypto/subtle';
+
+// The parts the server hashes, and the blocks a range is made of.
+const BLOCK = 128 * 1024;
+const TOKEN_TAG = [0x50, 0x4C, 0x48, 0x31]; // "PLH1"
+const TOKEN_HEADER = 4 + 32 + 4;
+// Decrypted blocks kept for the parts of a file that share one, and the files with a CDN URL.
+const CACHED_BLOCKS = 8;
+const MAX_FILES = 16;
+const FILE_IDLE = 5 * 60e3;
+// New URLs a file may ask for; the next 403 or 410 takes it from the server.
+const MAX_REFRESHES = 3;
+// fetch cannot tell the connection from the wait for the answer: 10 s without a byte, before the
+// headers too, and 30 s for the whole request.
+const SILENCE_TIMEOUT = 10e3;
+const REQUEST_TIMEOUT = 30e3;
+const RETRY_DELAY_MIN = 300;
+const RETRY_DELAY_SPREAD = 500;
+const FAILURES_TO_PAUSE = 3;
+const PAUSE = 10 * 60e3;
+// How long a file that fell back is taken from the server (the server avoids the CDN as long).
+const FALLEN_BACK_FOR = 60 * 60e3;
+const MAX_FALLEN_BACK = 256;
+const CANCEL_POLL = 200;
+// The host a development build may reach over plain http:// (the stand's); none in a server build.
+const DEV_HTTP_HOST = '';
+
+export type CdnHttpsGetFile = (cdnSupported: boolean) => Promise<UploadFile>;
+export type CdnHttpsGetHashes = (fileToken: Uint8Array, offset: number) => Promise<FileHash[]>;
+
+type FailureKind = 'refresh' | 'fallback' | 'closed';
+
+class CdnHttpsFailure {
+  constructor(
+    public kind: FailureKind,
+    public reason: string,
+    public transport = false,
+    public retry = false,
+    public generation = 0
+  ) {}
+}
+
+type Redirect = {
+  id: string,
+  url: string,
+  host: string,
+  fileToken: Uint8Array,
+  key: Uint8Array,
+  iv: Uint8Array,
+  hashes: FileHash[]
+};
+
+type Fetch = {
+  start: number,
+  end: number,
+  promise: Promise<Uint8Array[]>,
+  controller: AbortController,
+  waiters: number,
+  settled: boolean
+};
+
+// One app-wide count: the CDN is paused for every file and every account of this worker.
+let transportFailures = 0;
+let pausedUntil = 0;
+
+function now() {
+  return performance.now();
+}
+
+function isPaused() {
+  return pausedUntil !== 0 && now() < pausedUntil;
+}
+
+function transportSucceeded() {
+  transportFailures = 0;
+}
+
+function transportFailed() {
+  if(++transportFailures < FAILURES_TO_PAUSE) {
+    return false;
+  }
+
+  transportFailures = 0;
+  pausedUntil = now() + PAUSE;
+  return true;
+}
+
+function toHex(bytes: Uint8Array) {
+  let out = '';
+  for(let i = 0; i < bytes.length; ++i) {
+    out += (bytes[i] < 16 ? '0' : '') + bytes[i].toString(16);
+  }
+
+  return out;
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array) {
+  if(a.length !== b.length) {
+    return false;
+  }
+
+  let diff = 0;
+  for(let i = 0; i < a.length; ++i) {
+    diff |= a[i] ^ b[i];
+  }
+
+  return diff === 0;
+}
+
+// The files the server can redirect: documents and photos, by the part of them asked for.
+function fileKey(location: InputFileLocation) {
+  switch(location?._) {
+    case 'inputDocumentFileLocation':
+    case 'inputPhotoFileLocation':
+      return location._ + ':' + location.id + ':' + location.thumb_size;
+    default:
+      return undefined;
+  }
+}
+
+// The redirect of a "PLH1" token, or undefined when the client cannot use it.
+export function parseCdnHttpsRedirect(redirect: UploadFile.uploadFileCdnRedirect): Redirect {
+  const token = redirect.file_token;
+  if(!(token instanceof Uint8Array) || token.length <= TOKEN_HEADER ||
+    TOKEN_TAG.some((byte, i) => token[i] !== byte) ||
+    redirect.encryption_key?.length !== 32 || redirect.encryption_iv?.length !== 16) {
+    return;
+  }
+
+  let url: string;
+  try {
+    url = new TextDecoder('utf-8', {fatal: true}).decode(token.subarray(TOKEN_HEADER));
+  } catch(err) {
+    return;
+  }
+
+  const secure = url.indexOf('https://') === 0;
+  if(!secure && url.indexOf('http://') !== 0) {
+    return;
+  }
+
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch(err) {
+    return;
+  }
+
+  if(!parsed.hostname || parsed.username || parsed.password || url.indexOf('#') !== -1 ||
+    (!secure && (!DEV_HTTP_HOST || parsed.hostname !== DEV_HTTP_HOST))) {
+    return;
+  }
+
+  return {
+    id: toHex(token.subarray(4, 36)),
+    url,
+    host: parsed.host,
+    fileToken: token,
+    key: redirect.encryption_key,
+    iv: redirect.encryption_iv,
+    hashes: redirect.file_hashes || []
+  };
+}
+
+// Waits for promise while polling checkCancel: a cancelled part leaves at once with its error.
+function waitCancellable<T>(promise: Promise<T>, checkCancel: () => void, onCancel: () => void) {
+  if(!checkCancel) {
+    return promise;
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const interval = setInterval(() => {
+      try {
+        checkCancel();
+      } catch(err) {
+        clearInterval(interval);
+        onCancel();
+        reject(err);
+      }
+    }, CANCEL_POLL);
+
+    promise.then((value) => {
+      clearInterval(interval);
+      resolve(value);
+    }, (err) => {
+      clearInterval(interval);
+      reject(err);
+    });
+  });
+}
+
+function sleep(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve, reject) => {
+    if(signal.aborted) {
+      reject(new CdnHttpsFailure('closed', 'aborted'));
+      return;
+    }
+
+    const onAbort = () => {
+      clearTimeout(timeout);
+      reject(new CdnHttpsFailure('closed', 'aborted'));
+    };
+    const timeout = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort);
+  });
+}
+
+class CdnHttpsFile {
+  public url: string;
+  public host: string;
+  public generation = 0;
+  public stale = false;
+  public refreshes = 0;
+  public lastUsed = now();
+  private fileToken: Uint8Array;
+  private key: Promise<CryptoKey>;
+  private keyBytes: Uint8Array;
+  private iv: Uint8Array;
+  private hashes: Map<number, FileHash> = new Map();
+  private hashesRequest: Promise<unknown> = Promise.resolve();
+  private blocks: Map<number, Uint8Array> = new Map();
+  private loading: Map<number, Fetch> = new Map();
+  private transportFailed = false;
+  private closed = false;
+
+  constructor(
+    public id: string,
+    private size: number,
+    private getHashes: CdnHttpsGetHashes,
+    private log: (...args: any[]) => void
+  ) {}
+
+  // A new redirect of this file: a new URL for the parts to come; a new key drops the hashes.
+  public setRedirect(redirect: Redirect, getHashes: CdnHttpsGetHashes) {
+    if(!this.keyBytes || !sameBytes(this.keyBytes, redirect.key) || !sameBytes(this.iv, redirect.iv)) {
+      this.keyBytes = redirect.key.slice();
+      this.iv = redirect.iv.slice();
+      this.key = subtle.importKey('raw', this.keyBytes as BufferSource, {name: 'AES-CTR'}, false, ['decrypt']);
+      this.key.catch(() => {});
+      this.hashes.clear();
+    }
+
+    this.addHashes(redirect.hashes);
+    this.url = redirect.url;
+    this.host = redirect.host;
+    this.fileToken = redirect.fileToken;
+    this.getHashes = getHashes;
+    this.stale = false;
+    ++this.generation;
+  }
+
+  public close() {
+    if(this.closed) {
+      return;
+    }
+
+    this.closed = true;
+    this.blocks.clear();
+    this.hashes.clear();
+    for(const fetch of this.loading.values()) {
+      fetch.controller.abort();
+    }
+    this.loading.clear();
+  }
+
+  // The bytes [offset, offset + limit) of the file, from cached blocks and ranges of the CDN.
+  public async read(offset: number, limit: number, checkCancel: () => void): Promise<Uint8Array> {
+    this.lastUsed = now();
+    const end = Math.min(offset + limit, this.size);
+    if(offset >= end) {
+      return new Uint8Array(0);
+    }
+
+    const first = Math.floor(offset / BLOCK) * BLOCK;
+    const needed: Array<Promise<Uint8Array>> = [];
+    let run: {start: number, end: number, blocks: number[]};
+    const runs: Array<typeof run> = [];
+    for(let block = first; block < end; block += BLOCK) {
+      const cached = this.blocks.get(block);
+      if(cached) {
+        this.blocks.delete(block);
+        this.blocks.set(block, cached);
+        needed.push(Promise.resolve(cached));
+        run = undefined;
+        continue;
+      }
+
+      const fetch = this.loading.get(block);
+      if(fetch) {
+        needed.push(this.waitBlock(fetch, block, checkCancel));
+        run = undefined;
+        continue;
+      }
+
+      if(!run) {
+        runs.push(run = {start: block, end: block, blocks: []});
+      }
+
+      run.end = Math.min(block + BLOCK, this.size);
+      run.blocks.push(needed.length);
+      needed.push(undefined);
+    }
+
+    for(const {start, end, blocks} of runs) {
+      const fetch = this.startFetch(start, end);
+      blocks.forEach((index, i) => {
+        needed[index] = this.waitBlock(fetch, start + i * BLOCK, checkCancel);
+      });
+    }
+
+    const data = await Promise.all(needed);
+    const bytes = new Uint8Array(end - offset);
+    let at = 0;
+    data.forEach((block, i) => {
+      const from = i === 0 ? offset - first : 0;
+      const n = Math.min(block.length - from, bytes.length - at);
+      bytes.set(block.subarray(from, from + n), at);
+      at += n;
+    });
+
+    return bytes;
+  }
+
+  private waitBlock(fetch: Fetch, block: number, checkCancel: () => void) {
+    ++fetch.waiters;
+    let left = false;
+    const leave = () => {
+      if(left) {
+        return;
+      }
+
+      left = true;
+      if(!--fetch.waiters && !fetch.settled) {
+        // Nobody waits for the range any more: a part asking for it later starts its own.
+        this.forget(fetch);
+        fetch.controller.abort();
+      }
+    };
+
+    const promise = fetch.promise.then((blocks) => blocks[(block - fetch.start) / BLOCK]);
+    promise.then(leave, leave);
+    return waitCancellable(promise, checkCancel, leave);
+  }
+
+  private startFetch(start: number, end: number) {
+    const controller = new AbortController();
+    const fetch: Fetch = {start, end, promise: undefined, controller, waiters: 0, settled: false};
+    for(let block = start; block < end; block += BLOCK) {
+      this.loading.set(block, fetch);
+    }
+
+    const generation = this.generation;
+    fetch.promise = this.load(start, end, controller.signal, this.key, this.iv).then((blocks) => {
+      if(!this.closed) {
+        blocks.forEach((data, i) => this.cacheBlock(start + i * BLOCK, data));
+      }
+
+      return blocks;
+    }, (err) => {
+      const failure = err instanceof CdnHttpsFailure ? err : new CdnHttpsFailure('fallback', 'error');
+      failure.generation = generation;
+      if(controller.signal.aborted && failure.kind === 'fallback' && !failure.transport) {
+        failure.kind = 'closed';
+      }
+
+      if(!this.closed) {
+        this.log('cdn https', this.host, failure.reason, 'offset', start);
+      }
+
+      if(failure.transport && !this.transportFailed) {
+        this.transportFailed = true;
+        if(transportFailed()) {
+          this.log('cdn https', this.host, 'paused');
+        }
+      }
+
+      throw failure;
+    });
+    fetch.promise.catch(() => {}).then(() => {
+      fetch.settled = true;
+      this.forget(fetch);
+    });
+
+    return fetch;
+  }
+
+  private forget(fetch: Fetch) {
+    for(let block = fetch.start; block < fetch.end; block += BLOCK) {
+      if(this.loading.get(block) === fetch) {
+        this.loading.delete(block);
+      }
+    }
+  }
+
+  private cacheBlock(offset: number, data: Uint8Array) {
+    this.blocks.delete(offset);
+    this.blocks.set(offset, data);
+    if(this.blocks.size > CACHED_BLOCKS) {
+      this.blocks.delete(this.blocks.keys().next().value);
+    }
+  }
+
+  // The blocks [start, end) of the file, decrypted with the key and IV of the redirect the range
+  // was asked under, each checked against its hash.
+  private async load(start: number, end: number, signal: AbortSignal, cryptoKey: Promise<CryptoKey>, iv: Uint8Array) {
+    const body = await this.download(start, end - 1, signal);
+    const key = await cryptoKey;
+    const blocks: Uint8Array[] = [];
+    for(let offset = start; offset < end; offset += BLOCK) {
+      const length = Math.min(BLOCK, end - offset);
+      const counter = iv.slice();
+      const n = offset / 16;
+      counter[12] = (n >>> 24) & 0xFF;
+      counter[13] = (n >>> 16) & 0xFF;
+      counter[14] = (n >>> 8) & 0xFF;
+      counter[15] = n & 0xFF;
+      const cipher = body.subarray(offset - start, offset - start + length);
+      const plain = new Uint8Array(await subtle.decrypt({name: 'AES-CTR', counter: counter as BufferSource, length: 128}, key, cipher as BufferSource));
+      const hash = await this.hash(offset);
+      const digest = new Uint8Array(await subtle.digest('SHA-256', plain as BufferSource));
+      if(hash.limit !== length || !sameBytes(digest, hash.hash)) {
+        throw new CdnHttpsFailure('fallback', 'hash');
+      }
+
+      blocks.push(plain);
+    }
+
+    return blocks;
+  }
+
+  private addHashes(hashes: FileHash[]) {
+    for(const hash of hashes) {
+      const offset = Number(hash.offset);
+      if(offset % BLOCK === 0 && hash.hash?.length === 32) {
+        this.hashes.set(offset, hash);
+      }
+    }
+  }
+
+  // The server's hash of the block at offset; upload.getCdnFileHashes, one at a time, for one
+  // the redirect did not carry.
+  private hash(offset: number): Promise<FileHash> {
+    const hash = this.hashes.get(offset);
+    if(hash) {
+      return Promise.resolve(hash);
+    }
+
+    const promise = this.hashesRequest.then(async() => {
+      if(this.closed) {
+        throw new CdnHttpsFailure('closed', 'closed');
+      }
+
+      if(!this.hashes.has(offset)) {
+        let answer: FileHash[];
+        try {
+          answer = await this.getHashes(this.fileToken, offset);
+        } catch(err) {
+          throw new CdnHttpsFailure('fallback', 'hashes');
+        }
+
+        this.addHashes(answer || []);
+      }
+
+      const hash = this.hashes.get(offset);
+      if(!hash) {
+        throw new CdnHttpsFailure('fallback', 'no hash');
+      }
+
+      return hash;
+    });
+    this.hashesRequest = promise.catch(() => {});
+    return promise;
+  }
+
+  // One retry of the same range after a network failure, a silence or a 5xx.
+  private async download(first: number, last: number, signal: AbortSignal) {
+    for(let attempt = 0; ; ++attempt) {
+      try {
+        return await this.request(first, last, signal);
+      } catch(err) {
+        if(!(err instanceof CdnHttpsFailure) || !err.retry || attempt > 0) {
+          throw err;
+        }
+      }
+
+      await sleep(RETRY_DELAY_MIN + Math.floor(Math.random() * (RETRY_DELAY_SPREAD + 1)), signal);
+    }
+  }
+
+  private async request(first: number, last: number, signal: AbortSignal): Promise<Uint8Array> {
+    if(signal.aborted) {
+      throw new CdnHttpsFailure('closed', 'aborted');
+    }
+
+    const controller = new AbortController();
+    const onAbort = () => controller.abort();
+    signal.addEventListener('abort', onAbort);
+    let late = false, silent = false;
+    const deadline = setTimeout(() => {
+      late = true;
+      controller.abort();
+    }, REQUEST_TIMEOUT);
+    let silence: ReturnType<typeof setTimeout>;
+    const quiet = () => {
+      clearTimeout(silence);
+      silence = setTimeout(() => {
+        silent = true;
+        controller.abort();
+      }, SILENCE_TIMEOUT);
+    };
+
+    try {
+      quiet();
+      // No cache, no cookies, no referrer; a redirect is never followed ('manual' shows it as an
+      // opaque redirect, which 'error' would not tell from a network failure). The browser picks
+      // Accept-Encoding itself: a body that is not the range byte for byte fails its length.
+      const response = await fetch(this.url, {
+        method: 'GET',
+        headers: {'Range': `bytes=${first}-${last}`},
+        mode: 'cors',
+        credentials: 'omit',
+        cache: 'no-store',
+        redirect: 'manual',
+        referrerPolicy: 'no-referrer',
+        signal: controller.signal
+      });
+      quiet();
+      if(response.type === 'opaqueredirect') {
+        this.log('cdn https', this.host, 'redirect', 'offset', first);
+        throw new CdnHttpsFailure('fallback', 'redirect');
+      }
+
+      const status = response.status;
+      this.log('cdn https', this.host, status, 'offset', first);
+      if(status === 403 || status === 410) {
+        throw new CdnHttpsFailure('refresh', 'status ' + status);
+      }
+
+      if(status >= 500 && status < 600) {
+        throw new CdnHttpsFailure('fallback', 'status ' + status, true, true);
+      }
+
+      if(status !== 206) {
+        throw new CdnHttpsFailure('fallback', 'status ' + status);
+      }
+
+      const range = response.headers.get('Content-Range');
+      if(range?.trim() !== `bytes ${first}-${last}/${this.size}`) {
+        throw new CdnHttpsFailure('fallback', 'content range');
+      }
+
+      const length = last - first + 1;
+      const declared = response.headers.get('Content-Length');
+      if(declared !== null && declared.trim() !== '' + length) {
+        throw new CdnHttpsFailure('fallback', 'content length');
+      }
+
+      if(!response.body) {
+        throw new CdnHttpsFailure('fallback', 'content length');
+      }
+
+      const body = new Uint8Array(length);
+      let at = 0;
+      const reader = response.body.getReader();
+      for(;;) {
+        const {done, value} = await reader.read();
+        if(done) {
+          break;
+        }
+
+        quiet();
+        if(at + value.length > length) {
+          reader.cancel().catch(() => {});
+          throw new CdnHttpsFailure('fallback', 'content length');
+        }
+
+        body.set(value, at);
+        at += value.length;
+      }
+
+      if(at !== length) {
+        throw new CdnHttpsFailure('fallback', 'short body', true, true);
+      }
+
+      transportSucceeded();
+      return body;
+    } catch(err) {
+      if(err instanceof CdnHttpsFailure) {
+        throw err;
+      }
+
+      if(signal.aborted) {
+        throw new CdnHttpsFailure('closed', 'aborted');
+      }
+
+      if(late) {
+        throw new CdnHttpsFailure('fallback', 'deadline', true);
+      }
+
+      // A network or TLS failure, a refused CORS answer or a silence: fetch tells them apart only
+      // by our own timer.
+      throw new CdnHttpsFailure('fallback', silent ? 'silence' : 'network', true, true);
+    } finally {
+      clearTimeout(deadline);
+      clearTimeout(silence);
+      signal.removeEventListener('abort', onAbort);
+    }
+  }
+}
+
+export default class CdnHttps {
+  private files: Map<string, CdnHttpsFile> = new Map();
+  private fallenBack: Map<string, number> = new Map();
+
+  constructor(private log: (...args: any[]) => void) {}
+
+  // A part of a file: from the CDN while the file has a URL there, else upload.getFile, with
+  // cdn_supported while the file may use the CDN. Nothing of the CDN reaches the caller as an
+  // error: a failure there takes the part from the server.
+  public async requestFilePart({location, size, offset, limit, checkCancel, getFile, getHashes}: {
+    location: InputFileLocation,
+    size: number,
+    offset: number,
+    limit: number,
+    checkCancel: () => void,
+    getFile: CdnHttpsGetFile,
+    getHashes: CdnHttpsGetHashes
+  }): Promise<UploadFile> {
+    const key = fileKey(location);
+    if(!key || !(size > 0)) {
+      return getFile(false);
+    }
+
+    this.sweep();
+    // Every pass either answers, asks for a new URL (at most MAX_REFRESHES a file) or falls back;
+    // a file closed under the part (too many files at once) is asked for again a few times.
+    for(let pass = 0; pass < MAX_REFRESHES + 4; ++pass) {
+      checkCancel?.();
+      const file = this.files.get(key);
+      if(file && !file.stale) {
+        const generation = file.generation;
+        try {
+          const bytes = await file.read(offset, limit, checkCancel);
+          const result: UploadFile.uploadFile = {_: 'upload.file', type: {_: 'storage.filePartial'}, mtime: 0, bytes};
+          return result;
+        } catch(err) {
+          if(!(err instanceof CdnHttpsFailure)) {
+            throw err; // the part was cancelled
+          }
+
+          if(err.kind === 'refresh') {
+            // The parts in flight under one URL all meet its expiry: the first of them asks for a
+            // new URL, the rest take that one, and a 403 of a URL already replaced counts for none.
+            if(!file.stale && (err.generation || generation) === file.generation && this.files.get(key) === file) {
+              if(file.refreshes >= MAX_REFRESHES) {
+                this.fallBack(key);
+              } else {
+                ++file.refreshes;
+                file.stale = true;
+              }
+            }
+          } else if(err.kind === 'fallback') {
+            this.fallBack(key);
+          }
+
+          continue;
+        }
+      }
+
+      const cdnSupported = this.mayUse(key);
+      const result = await getFile(cdnSupported);
+      if(result._ !== 'upload.fileCdnRedirect') {
+        return result;
+      }
+
+      if(!cdnSupported) {
+        // The server redirects only a request with cdn_supported.
+        throw makeError('UNKNOWN');
+      }
+
+      const redirect = parseCdnHttpsRedirect(result);
+      if(!redirect) {
+        this.fallBack(key);
+        continue;
+      }
+
+      let current = this.files.get(key);
+      if(!current || current.id !== redirect.id) {
+        current?.close();
+        current = new CdnHttpsFile(redirect.id, size, getHashes, this.log);
+        this.files.delete(key);
+        this.files.set(key, current);
+        this.evict();
+      }
+
+      current.setRedirect(redirect, getHashes);
+    }
+
+    this.fallBack(key);
+    return getFile(false);
+  }
+
+  // Whether upload.getFile of this file may carry cdn_supported.
+  private mayUse(key: string) {
+    if(isPaused()) {
+      return false;
+    }
+
+    const until = this.fallenBack.get(key);
+    if(until === undefined) {
+      return true;
+    }
+
+    if(now() < until) {
+      return false;
+    }
+
+    this.fallenBack.delete(key);
+    return true;
+  }
+
+  // The rest of the file comes from the server: what was loaded stays with the caller.
+  private fallBack(key: string) {
+    const file = this.files.get(key);
+    if(file) {
+      file.close();
+      this.files.delete(key);
+    }
+
+    this.fallenBack.delete(key);
+    this.fallenBack.set(key, now() + FALLEN_BACK_FOR);
+    if(this.fallenBack.size > MAX_FALLEN_BACK) {
+      this.fallenBack.delete(this.fallenBack.keys().next().value);
+    }
+  }
+
+  private evict() {
+    while(this.files.size > MAX_FILES) {
+      const [key, file] = this.files.entries().next().value;
+      file.close();
+      this.files.delete(key);
+    }
+  }
+
+  private sweep() {
+    const time = now();
+    for(const [key, file] of this.files) {
+      if(time - file.lastUsed > FILE_IDLE) {
+        file.close();
+        this.files.delete(key);
+      }
+    }
+  }
+}
+"""
+
+# The edits, each (file, upstream's text, Pluma's).
+CDN_HTTPS_EDITS = (
+    (API_FILE_MANAGER,
+     "import pause from '@helpers/schedulers/pause';\n",
+     "import pause from '@helpers/schedulers/pause';\n"
+     "import CdnHttps from '@appManagers/cdnHttps';\n"),
+    (API_FILE_MANAGER,
+     "  private webFileDcId: DcId;\n",
+     "  private webFileDcId: DcId;\n"
+     "  // pluma: parts of large files from the server's HTTPS CDN (cdnHttps.ts).\n"
+     "  private cdnHttps = new CdnHttps((...args: any[]) => this.log(...args));\n"),
+    (API_FILE_MANAGER,
+     "    checkCancel,\n"
+     "    floodMaxTimeout,\n"
+     "    priority\n"
+     "  }: {\n"
+     "    dcId: DcId,\n"
+     "    location: InputFileLocation,\n"
+     "    offset: number,\n"
+     "    limit: number,\n",
+     "    checkCancel,\n"
+     "    floodMaxTimeout,\n"
+     "    priority,\n"
+     "    size\n"
+     "  }: {\n"
+     "    dcId: DcId,\n"
+     "    location: InputFileLocation,\n"
+     "    offset: number,\n"
+     "    limit: number,\n"
+     "    // pluma: the file's size, which the CDN's answers must name (cdnHttps.ts); unknown, no CDN\n"
+     "    size?: number,\n"),
+    (API_FILE_MANAGER,
+     "      callback: () => {\n"
+     "        return this.apiManager.invokeApi('upload.getFile', {\n"
+     "          location,\n"
+     "          offset,\n"
+     "          limit\n"
+     "        }, {\n"
+     "          dcId,\n"
+     "          fileDownload: true,\n"
+     "          floodMaxTimeout\n"
+     "        }) as Promise<MyUploadFile>;\n"
+     "      },\n",
+     "      // pluma: the part may come from the server's HTTPS CDN (cdnHttps.ts); a failure there\n"
+     "      // takes it from the server, as upstream does, and never reaches the caller.\n"
+     "      callback: () => this.cdnHttps.requestFilePart({\n"
+     "        location,\n"
+     "        size,\n"
+     "        offset,\n"
+     "        limit,\n"
+     "        checkCancel,\n"
+     "        getFile: (cdnSupported) => this.apiManager.invokeApi('upload.getFile', {\n"
+     "          location,\n"
+     "          offset,\n"
+     "          limit,\n"
+     "          cdn_supported: cdnSupported || undefined\n"
+     "        }, {\n"
+     "          dcId,\n"
+     "          fileDownload: true,\n"
+     "          floodMaxTimeout\n"
+     "        }),\n"
+     "        getHashes: (fileToken, hashesOffset) => this.apiManager.invokeApi('upload.getCdnFileHashes', {\n"
+     "          file_token: fileToken,\n"
+     "          offset: hashesOffset\n"
+     "        }, {\n"
+     "          dcId\n"
+     "        })\n"
+     "      }) as Promise<MyUploadFile>,\n"),
+    (API_FILE_MANAGER,
+     "            limit: limitPart,\n"
+     "            id,\n"
+     "            queueId: options.queueId,\n"
+     "            checkCancel\n"
+     "          });\n",
+     "            limit: limitPart,\n"
+     "            id,\n"
+     "            queueId: options.queueId,\n"
+     "            checkCancel,\n"
+     "            size // pluma: for the HTTPS CDN (cdnHttps.ts)\n"
+     "          });\n"),
+    (DOCS_MANAGER,
+     "      location: getDocumentInputFileLocation(doc),\n"
+     "      offset,\n"
+     "      limit,\n",
+     "      location: getDocumentInputFileLocation(doc),\n"
+     "      offset,\n"
+     "      limit,\n"
+     "      size: doc.size, // pluma: for the HTTPS CDN (cdnHttps.ts)\n"),
+    (NETWORKER,
+     "            lang_code: initConnectionParams.langCode,\n"
+     "            query: (serializer: TLSerialization) => {\n",
+     "            lang_code: initConnectionParams.langCode,\n"
+     "            // pluma: this client takes large files from the server's HTTPS CDN (cdnHttps.ts).\n"
+     "            params: {_: 'jsonObject', value: [{_: 'jsonObjectValue', key: 'pluma_cdn', value: {_: 'jsonNumber', value: 1}}]},\n"
+     "            query: (serializer: TLSerialization) => {\n"),
+)
+
+# What the edits rely on: the serializer reads a 'true' field from the object
+# itself when it has no pFlags, and sets the bit of an optional field it is
+# given, true or a value (the flags of cdn_supported and params), the
+# schema has the fields and the method, the Service Worker routes no URL of the
+# CDN (its route is the second to last part of the path: /o/<id>), and the page
+# restricts no connection.
+CDN_HTTPS_RELIES_ON = (
+    ("src/lib/mtproto/tl_utils.ts", "    const pFlags = obj.pFlags || obj;"),
+    ("src/lib/mtproto/tl_utils.ts",
+     "        if(condType[1] === 'true' ? pFlags?.[param.name] : obj[param.name] !== undefined) {\n"),
+    ("src/lib/mtproto/schema.ts", '{"name":"cdn_supported","type":"flags.1?true"}'),
+    ("src/lib/mtproto/schema.ts", '{"name":"params","type":"flags.1?JSONValue"}'),
+    ("src/lib/mtproto/schema.ts", '"method":"upload.getCdnFileHashes"'),
+    (SERVICE_WORKER, "    const [scope, _params] = event.request.url.split('/').slice(-2);\n"),
+    ("index.html", PAGE_POLICY),
+)
+
+# The methods of a CDN datacenter, which the client never sends, and the flag,
+# which only the edit sets.
+_CDN_DATACENTER_METHOD = re.compile(r"""['"`]upload\.(?:getCdnFile|reuploadCdnFile)['"`]|['"`]help\.getCdnConfig['"`]""")
+_CDN_SUPPORTED = re.compile(r"\bcdn_supported\b")
+_SCHEMA_FILES = ("src/layer.d.ts", "src/lib/mtproto/schema.ts")
+# Log calls of the client's HTTPS code: they name the host, the status and the
+# offset, never the URL, the token, the key, the IV or the bytes.
+_CDN_LOG_CALL = re.compile(r"\blog\(([^\n]*)\);")
+_CDN_LOG_SECRET = re.compile(r"\b(?:url|fileToken|file_token|key|keyBytes|cryptoKey|iv|counter|bytes|body|plain|cipher)\b")
+
+
+def cdn_https_dev_host(c):
+    """The host a development build may reach over http://: its server's."""
+    if c.target != "dev":
+        return None
+    return re.match(r"wss?://(\[[^\]]+\]|[^/:]+)", c.server_url).group(1)
+
+
+def cdn_https_file(c):
+    host = cdn_https_dev_host(c)
+    if host is None:
+        return CDN_HTTPS_TS
+    return CDN_HTTPS_TS.replace(CDN_HTTPS_DEV_HOST_LINE, f"const DEV_HTTP_HOST = '{host}';\n", 1)
+
+
+def cdn_https(tree, c):
+    for rel, text in CDN_HTTPS_RELIES_ON:
+        tree.expect(rel, text)
+    if (tree.root / CDN_HTTPS).exists():
+        raise PatchError(f"{CDN_HTTPS}: upstream has a file of that name now; review it")
+    if CDN_HTTPS_TS.count(CDN_HTTPS_DEV_HOST_LINE) != 1:
+        raise PatchError(f"{CDN_HTTPS}: the development host line is not there once")
+    for rel, old, new in CDN_HTTPS_EDITS:
+        tree.replace(rel, old, new)
+    tree.write(CDN_HTTPS, cdn_https_file(c))
+
+
+def verify_cdn_https(tree, c, sources):
+    text = sources.get(CDN_HTTPS) or ""
+    if c.target == "server" and CDN_HTTPS_DEV_HOST_LINE not in text:
+        raise PatchError(f"{CDN_HTTPS}: a server build takes http:// (a development build's)")
+    if text != cdn_https_file(c):
+        raise PatchError(f"{CDN_HTTPS}: not the client's HTTPS CDN code of ci/patch.py")
+    for rel, old, new in CDN_HTTPS_EDITS:
+        if sources[rel].count(new) != 1 or old in sources[rel].replace(new, ""):
+            raise PatchError(f"{rel}: the edit of the HTTPS CDN is not there")
+    for rel, source in sources.items():
+        if rel in _SCHEMA_FILES:
+            continue
+        code = _COMMENT.sub("", source)
+        if _CDN_DATACENTER_METHOD.search(code):
+            raise PatchError(f"{rel}: sends a method of a CDN datacenter, which the client never connects to")
+        found = len(_CDN_SUPPORTED.findall(code))
+        if found != (rel == API_FILE_MANAGER):
+            raise PatchError(f"{rel}: {found} uses of cdn_supported; only the HTTPS CDN's getFile may set it")
+    if len(re.findall(r"\bpluma_cdn\b", sources[NETWORKER])) != 1:
+        raise PatchError(f"{NETWORKER}: initConnection does not say pluma_cdn once")
+    for m in _CDN_LOG_CALL.finditer(text):
+        if _CDN_LOG_SECRET.search(m.group(1)):
+            raise PatchError(f"{CDN_HTTPS}: a log line names {_CDN_LOG_SECRET.search(m.group(1)).group()!r}")
+    if re.search(r"^\s*case 'o':", sources[SERVICE_WORKER], re.M):
+        raise PatchError(f"{SERVICE_WORKER}: routes /o/, the path of the CDN's files")
+    if _POLICY_CONNECT.search(sources["index.html"]):
+        raise PatchError("index.html: the page's policy restricts connections; the CDN's host must be allowed")
 
 
 def main(argv=None):
