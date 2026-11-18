@@ -6368,8 +6368,10 @@ export class PathSelector {
   private appConfigHash: number;
   private memory: PathMemory = {v: 1, networks: {}};
   private loaded = false;
-  // the gateway answered no probe: none until the next app config
-  private unsupported = false;
+  // Until when the probes rest (Date.now()): the gateway closed right after resPQ. It does so when it
+  // knows no probe and when its limits refuse one (the server's task 113 brief, «Контракт пробы»),
+  // so the rest lasts until the next app config or failed_ttl_s, not for good.
+  private unsupportedUntil = 0;
 
   private switchers = new Set<PathSwitcher>();
   private racing: Promise<boolean>;
@@ -6412,9 +6414,10 @@ export class PathSelector {
     this.edgeValue = appConfig.pluma_edge;
     if(appConfig.hash !== this.appConfigHash) {
       this.appConfigHash = appConfig.hash;
-      if(this.unsupported) {
+      if(this.unsupportedUntil) {
         // The server may answer probes now.
-        this.unsupported = false;
+        this.unsupportedUntil = 0;
+        clearTimeout(this.raceRetryTimer);
         if(this.loaded) {
           this.begin('config');
         }
@@ -6495,8 +6498,12 @@ export class PathSelector {
     });
   }
 
+  private markUnsupported() {
+    this.unsupportedUntil = Date.now() + this.settings.failed_ttl_s * 1000;
+  }
+
   private active() {
-    return this.started && this.edges.length > 0 && !this.unsupported;
+    return this.started && this.edges.length > 0 && Date.now() >= this.unsupportedUntil;
   }
 
   private paths() {
@@ -6567,11 +6574,15 @@ export class PathSelector {
     return this.racing ??= this.runRace(why).then((carried) => {
       this.racing = undefined;
       clearTimeout(this.raceRetryTimer);
-      if(carried || this.unsupported) {
+      const rest = this.unsupportedUntil - Date.now();
+      if(carried) {
         this.raceRetry = RACE_RETRY_MIN;
-        if(carried && !this.rankArmed) {
+        if(!this.rankArmed) {
           this.scheduleRank(LAUNCH_RANK_DELAY, false);
         }
+      } else if(rest > 0) {
+        this.raceRetry = RACE_RETRY_MIN;
+        this.raceRetryTimer = ctx.setTimeout(() => this.race('retry'), rest);
       } else {
         this.raceRetryTimer = ctx.setTimeout(() => this.race('retry'), this.raceRetry);
         this.raceRetry = Math.min(this.raceRetry * 2, RACE_RETRY_MAX);
@@ -6681,7 +6692,7 @@ export class PathSelector {
     if(!carried) {
       if(all.some((result) => result.outcome === 'unsupported')) {
         this.log('the server answers no probes');
-        this.unsupported = true;
+        this.markUnsupported();
       } else {
         this.log('no path carried, the network is down');
       }
@@ -6752,7 +6763,7 @@ export class PathSelector {
     if(!all.some(passed)) {
       if(all.some((result) => result.outcome === 'unsupported')) {
         this.log('the server answers no probes');
-        this.unsupported = true;
+        this.markUnsupported();
       }
       return settings.reprobe_s * 1000;
     }
