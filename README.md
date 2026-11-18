@@ -91,11 +91,12 @@ Set these in the repository's *Settings → Secrets and variables → Actions �
 |---|---|
 | `PLUMA_SERVER_URL` | The WebSocket URL of the server's MTProto gateway: `wss://<host>/apiws`. A page served over HTTPS can open only `wss://`, so the gateway's WebSocket port (11443) sits behind the TLS proxy of the server's web site. |
 | `PLUMA_RSA_PUBLIC_KEY` | The server key as a PKCS#1 PEM: `openssl rsa -in server_pkcs1.key -RSAPublicKey_out` |
+| `PLUMA_EDGE_WS_URLS` | Optional: the server's edges, the hosts in front of its gateway that serve this site too (a CDN, a node in another country), as their WebSocket URLs `wss://<host>/apiws`, comma-separated, at most 4. A page loaded from an edge's host connects to the server through that edge; from any other host, to `PLUMA_SERVER_URL`. Empty: no edge. |
 
-Neither is a secret: every copy of the page carries them. The build prints the key's fingerprint (`server key 0x… (…)`), in hex and decimal; the decimal one must be the server's `SERVER_RSA_KEY_FINGERPRINT`.
+None is a secret: every copy of the page carries them. The build prints the key's fingerprint (`server key 0x… (…)`), in hex and decimal; the decimal one must be the server's `SERVER_RSA_KEY_FINGERPRINT`.
 
 - **No server variables set.** The build targets the development server of [`config/dev`](config/dev): the server repository's docker compose stack on the machine that runs the browser, at `ws://localhost:11443/apiws`, with the development key.
-- **Some but not all set.** The build fails.
+- **Some but not all set.** The build fails: `PLUMA_EDGE_WS_URLS` needs the other two, and they do not need it.
 
 ## The site
 

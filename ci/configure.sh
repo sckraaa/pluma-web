@@ -4,14 +4,16 @@
 # target=server|dev to $GITHUB_OUTPUT.
 #
 # Environment: SERVER_URL (the WebSocket URL of the server's MTProto
-# gateway, wss://<host>/apiws), RSA_PUBLIC_KEY (PKCS#1 PEM).
+# gateway, wss://<host>/apiws), RSA_PUBLIC_KEY (PKCS#1 PEM), EDGE_WS_URLS
+# (optional: the WebSocket URLs of the server's edges, comma-separated,
+# wss://<host>/apiws; a page loaded from an edge connects through it).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-if [ -n "${SERVER_URL:-}${RSA_PUBLIC_KEY:-}" ]; then
+if [ -n "${SERVER_URL:-}${RSA_PUBLIC_KEY:-}${EDGE_WS_URLS:-}" ]; then
 	# Half a configuration would build a client that cannot sign in.
 	for v in SERVER_URL RSA_PUBLIC_KEY; do
 		if [ -z "${!v:-}" ]; then
@@ -24,6 +26,7 @@ if [ -n "${SERVER_URL:-}${RSA_PUBLIC_KEY:-}" ]; then
 else
 	. config/dev/server.env
 	SERVER_URL=$PLUMA_SERVER_URL
+	EDGE_WS_URLS=$PLUMA_EDGE_WS_URLS
 	cp config/dev/server_public.pem "$tmp/key.pem"
 	target=dev
 fi
@@ -43,6 +46,7 @@ fi
 build_id=$(git rev-parse HEAD)
 
 python3 -I ci/patch.py --source upstream --upstream upstream.env --app config/app.env \
-	--server-url "$SERVER_URL" --rsa-public-key "$tmp/key.pem" --target "$target" --build-id "$build_id"
+	--server-url "$SERVER_URL" --rsa-public-key "$tmp/key.pem" --target "$target" --build-id "$build_id" \
+	--edge-ws-urls "${EDGE_WS_URLS:-}"
 echo "configure: $target build"
 echo "target=$target" >>"${GITHUB_OUTPUT:-/dev/null}"
