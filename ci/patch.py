@@ -1735,43 +1735,50 @@ def link_host(tree):
 
 
 def server_ws_url_body(c):
-    """The body of constructTelegramWebSocketUrl: the server's URL, or the
-    URL of the edge the page was loaded from (W-086 of the server
-    repository's clients/patches/web.md). Without edges, the server's URL
-    only, as before edges were there."""
-    body = ("  if(!import.meta.env.VITE_MTPROTO_HAS_WS) {\n"
+    """The body of constructTelegramWebSocketUrl: the path to the server the
+    worker chose (pathSelector.ts, W-087 of the server repository's
+    clients/patches/web.md) among the build's (server_ws_paths)."""
+    return ("  if(!import.meta.env.VITE_MTPROTO_HAS_WS) {\n"
             "    return;\n"
             "  }\n"
             "\n"
             "  // pluma: every datacenter, connection type and mode (test, premium) is\n"
-            "  // the one Pluma server.\n"
-            "  assertValidDcId(_dcId);\n")
+            "  // the one Pluma server, by the path to it this worker chose\n"
+            "  // (pathSelector.ts).\n"
+            "  assertValidDcId(_dcId);\n"
+            "  return plumaPaths.url(PLUMA_SERVER_PATH, PLUMA_EDGE_PATHS);")
+
+
+def server_ws_paths(c):
+    """The paths to the server the build carries, the only URLs it connects
+    to: the server's own and its edges' by their hosts (W-086, W-087). They
+    stand before constructTelegramWebSocketUrl."""
+    text = ("// pluma: the paths to the server this build knows, the only URLs it connects\n"
+            "// to: the server's own and its edges' (a CDN, a node in another country:\n"
+            "// ADR 0072 of the server repository) by their hosts.\n"
+            f"export const PLUMA_SERVER_PATH = '{c.server_url}';\n")
     if c.edge_ws_urls:
-        body += ("  // pluma: a page loaded from one of the server's edges (a CDN, a node in\n"
-                 "  // another country: ADR 0072 of the server repository) reaches the server\n"
-                 "  // through that edge, the way it reached the page; from any other host,\n"
-                 "  // directly. In a worker location is the worker's, of the page's origin\n"
-                 "  // (config/app.ts reads it there too).\n"
-                 "  switch(location.host) {\n"
-                 + "".join(f"    case '{edge_host(url)}': return '{url}';\n" for url in c.edge_ws_urls) +
-                 "  }\n")
-    return body + f"  return '{c.server_url}';"
+        text += ("export const PLUMA_EDGE_PATHS = new Map<string, string>([\n"
+                 + ",\n".join(f"  ['{edge_host(url)}', '{url}']" for url in c.edge_ws_urls)
+                 + "\n]);\n")
+    else:
+        text += "export const PLUMA_EDGE_PATHS = new Map<string, string>();\n"
+    return text + "\n"
 
 
 def verify_server_ws_url(dc, c):
-    """The server's URL is what the client connects to, unless the page's
-    host is one of the build's edges, whose URL it is then."""
+    """The server's URL and the edges' are the only ones, each once, and the
+    client connects by the path the worker chose among them."""
     urls = re.findall(r"['`](wss?://[^'`]*)['`]", dc)
     if sorted(urls) != sorted([c.server_url] + c.edge_ws_urls) or len(re.findall(r"['`]wss?://", dc)) != len(urls):
         raise PatchError(f"dcConfigurator.ts: the WebSocket URLs are {urls}, "
                          f"expected the server's and the edges' {[c.server_url] + c.edge_ws_urls}")
-    if dc.count(f"\n  return '{c.server_url}';\n}}\n") != 1:
-        raise PatchError("dcConfigurator.ts: the server's URL is not what the client connects to by default")
-    if dc.count("  switch(location.host) {\n") != bool(c.edge_ws_urls):
-        raise PatchError("dcConfigurator.ts: the choice of an edge by the page's host is not there as the build's edges need")
-    for url in c.edge_ws_urls:
-        if dc.count(f"\n    case '{edge_host(url)}': return '{url}';\n") != 1:
-            raise PatchError(f"dcConfigurator.ts: the edge {url} is not chosen by the page's host {edge_host(url)}")
+    if dc.count(server_ws_paths(c)) != 1:
+        raise PatchError("dcConfigurator.ts: the paths to the server are not the build's server URL and edges")
+    if dc.count("\n  return plumaPaths.url(PLUMA_SERVER_PATH, PLUMA_EDGE_PATHS);\n}\n") != 1 or dc.count(PATHS_IMPORT) != 1:
+        raise PatchError("dcConfigurator.ts: the client does not connect by the path the worker chose")
+    if re.search(r"\blocation\.", dc):
+        raise PatchError("dcConfigurator.ts: picks a URL by the page's address; pathSelector.ts does")
 
 
 def patch(tree, c):
@@ -1806,13 +1813,18 @@ def patch(tree, c):
                          "review the transport flags of the patch")
 
     # The server: one WebSocket URL for every datacenter, connection type
-    # (client, download, upload) and mode (test, premium).
+    # (client, download, upload) and mode (test, premium), the path to it the
+    # worker chose among the build's (paths, below).
     dc = "src/lib/mtproto/dcConfigurator.ts"
     tree.replace_body(dc,
                       "export function constructTelegramWebSocketUrl(_dcId: DcId, connectionType: ConnectionType, premium?: boolean) {\n",
                       "\n}\n",
                       server_ws_url_body(c),
                       must_contain=(".web.telegram.org/${path}",))
+    tree.replace(dc, "export function constructTelegramWebSocketUrl(",
+                 server_ws_paths(c) + "export function constructTelegramWebSocketUrl(")
+    tree.replace(dc, "import isValidDcId from '@lib/mtproto/isValidDcId';\n",
+                 "import isValidDcId from '@lib/mtproto/isValidDcId';\n" + PATHS_IMPORT)
     tree.replace(dc,
                  "// A dcId can arrive from the service worker's `stream/` route, i.e. from a URL any page\n"
                  "// can craft: interpolated unchecked it turns the endpoint into an attacker-chosen host\n"
@@ -1939,6 +1951,9 @@ def patch(tree, c):
 
     # Large files from the server's HTTPS CDN.
     cdn_https(tree, c)
+
+    # The path to the server: the one that carries best of the build's.
+    paths(tree)
 
     # Telegram's site off the screens a user reaches.
     for rel, old, new in TELEGRAM_SITE_EDITS:
@@ -2072,6 +2087,7 @@ def verify(tree, c):
     verify_e2e_group_calls(sources)
     verify_call_colors(sources)
     verify_cdn_https(tree, c, sources)
+    verify_paths(sources)
 
     # Links: pluma.chat is a link host of the app, its exact host only, and
     # no Telegram link host is left but the ones LINK_KEEP knows.
@@ -5428,6 +5444,1541 @@ def verify_cdn_https(tree, c, sources):
         raise PatchError(f"{SERVICE_WORKER}: routes /o/, the path of the CDN's files")
     if _POLICY_CONNECT.search(sources["index.html"]):
         raise PatchError("index.html: the page's policy restricts connections; the CDN's host must be allowed")
+
+
+# --- paths to the server (task 113 of the server repository, ADR 0073) -----------
+# A page reached the server through the host it was loaded from (W-086): from
+# some networks a path carries the first ~16 KB of a connection and then goes
+# silent, and then the page hung. The client now probes the paths the build
+# carries, the server's own URL and its edges', with the gateway's pluma.probe
+# (larger than that cut), picks the one that carries best and keeps the choice
+# by country (pathChoice.ts, the rules; pathSelector.ts, the probes, the timers
+# and the memory). constructTelegramWebSocketUrl returns the chosen path, and a
+# new choice moves every connection (TcpObfuscated.changeUrl, as upstream's
+# premium_toggle does, apiManager.ts:124-141). The probes speak obfuscated2
+# over the abridged transport through the WebSocket class tweb's own transport
+# uses (dcConfigurator.ts:95-99), on connections of their own that close after
+# the answer. What starts them: the start of the worker, a pong that keeps the
+# client waiting suspect_ms with not a byte (networker.ts,
+# sendPingDelayDisconnect), the browser going online or the user asking to
+# reconnect (networkerFactory.forceReconnectTimeout, apiManagerProxy.ts:642-644,
+# connectionStatus.ts:185) and a new country in pluma_probe of the app config
+# (apiManagerMethods.ts, applyAppConfig). The page itself never moves: sign-in
+# and storage stay with its host.
+PATH_CHOICE = "src/lib/mtproto/pathChoice.ts"
+PATH_SELECTOR = "src/lib/mtproto/pathSelector.ts"
+DC_CONFIGURATOR = "src/lib/mtproto/dcConfigurator.ts"
+API_MANAGER = "src/lib/appManagers/apiManager.ts"
+API_MANAGER_METHODS = "src/lib/appManagers/apiManagerMethods.ts"
+NETWORKER_FACTORY = "src/lib/appManagers/networkerFactory.ts"
+PATHS_IMPORT = "import plumaPaths from '@lib/mtproto/pathSelector';\n"
+
+# The rules of the choice, a new file of the checkout with no imports
+# (ci/path_choice_test.mjs runs it in Node.js).
+PATH_CHOICE_TS = r"""/*
+ * pluma: the choice of a path to the server (task 113, ADR 0073 of the server repository).
+ *
+ * A path is a WebSocket URL that carries MTProto to the server's gateway: the server's own and each
+ * of its edges' (a CDN, a node in another country). From some networks a path carries the first
+ * ~16 KB of a connection and then goes silent, so a path is judged by a probe larger than that: on a
+ * connection of its own the client sends req_pq_multi, and after resPQ
+ *
+ *   pluma.probe#5c316d30 nonce:int128 down:int pad:bytes = pluma.Probe;
+ *
+ * unencrypted, and the gateway answers with down bytes in messages
+ *
+ *   pluma.probeData#6ab3780b nonce:int128 seq:int total:int server_ms:long pad:bytes = pluma.ProbeData;
+ *
+ * of at most 16 KiB of pad each, seq 0 .. total - 1 in order. This file is what the choice is made
+ * of, with no network, clock or storage of its own (pathSelector.ts has those): the messages, the
+ * meter of a probe, the score of a path, the memory of paths by network and the rules that switch.
+ */
+
+export type ProbeOutcome = 'ok' | 'slow' | 'frozen' | 'failed' | 'unsupported';
+
+export type ProbeResult = {
+  outcome: ProbeOutcome,
+  // req_pq_multi to resPQ, ms
+  rtt: number,
+  // the speed of the answer, bytes a second; 0 unknown
+  bps: number,
+  // the pad bytes of the answer received whole
+  received: number,
+  // why it did not pass, for the log
+  why?: string
+};
+
+export type ProbeSettings = {
+  gate_down: number,
+  rank_down: number,
+  up: number,
+  stall_ms: number,
+  deadline_ms: number,
+  suspect_ms: number,
+  reprobe_s: number,
+  rank_min_interval_s: number,
+  min_dwell_s: number,
+  switch_ratio: number,
+  switch_ratio_now: number,
+  edge_probe_if_direct_ms: number,
+  bad_ttl_s: number,
+  failed_ttl_s: number,
+  race_stagger_ms: number,
+  confirm_s: number
+};
+
+type ProbeField = {def: number, min: number, max: number, ratio?: boolean};
+
+// The fields of pluma_probe with the defaults of the brief and the ranges the server accepts
+// (app/bff/configuration/internal/appconfig/probe.go of the server repository).
+const PROBE_FIELDS: {[key in keyof ProbeSettings]: ProbeField} = {
+  gate_down: {def: 65536, min: 16384, max: 524288},
+  rank_down: {def: 196608, min: 16384, max: 524288},
+  up: {def: 20480, min: 0, max: 65536},
+  stall_ms: {def: 1500, min: 300, max: 10000},
+  deadline_ms: {def: 6000, min: 1000, max: 30000},
+  suspect_ms: {def: 4000, min: 1000, max: 30000},
+  reprobe_s: {def: 21600, min: 600, max: 604800},
+  rank_min_interval_s: {def: 1800, min: 60, max: 86400},
+  min_dwell_s: {def: 600, min: 0, max: 86400},
+  switch_ratio: {def: 0.7, min: 0.05, max: 0.95, ratio: true},
+  switch_ratio_now: {def: 0.25, min: 0.05, max: 0.95, ratio: true},
+  edge_probe_if_direct_ms: {def: 1500, min: 100, max: 60000},
+  bad_ttl_s: {def: 86400, min: 60, max: 604800},
+  failed_ttl_s: {def: 300, min: 10, max: 86400},
+  race_stagger_ms: {def: 800, min: 0, max: 10000},
+  confirm_s: {def: 60, min: 10, max: 3600}
+};
+
+function probeDefaults(): ProbeSettings {
+  const out = {} as ProbeSettings;
+  for(const key in PROBE_FIELDS) {
+    out[key as keyof ProbeSettings] = PROBE_FIELDS[key as keyof ProbeSettings].def;
+  }
+  return out;
+}
+
+export const PROBE_DEFAULTS: Readonly<ProbeSettings> = Object.freeze(probeDefaults());
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof(value) === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * pluma_probe of the app config: the settings, each field within its range or the default, and the
+ * country of the client's address ('' unknown). undefined for anything but an object of version 1.
+ */
+export function parseProbeConfig(value: unknown): {settings: ProbeSettings, country: string} | undefined {
+  if(!isObject(value) || value.v !== 1) {
+    return undefined;
+  }
+
+  const settings = probeDefaults();
+  for(const key in PROBE_FIELDS) {
+    const field = PROBE_FIELDS[key as keyof ProbeSettings];
+    const x = value[key];
+    if(typeof(x) === 'number' && Number.isFinite(x) && x >= field.min && x <= field.max && (field.ratio || Number.isInteger(x))) {
+      settings[key as keyof ProbeSettings] = x;
+    }
+  }
+
+  // A probe that may stall as long as it may last, or a ratio that switches at once above the one that
+  // waits for a second probe, is not one the server sends: the pairs go back to the defaults.
+  if(settings.deadline_ms <= settings.stall_ms) {
+    settings.deadline_ms = PROBE_FIELDS.deadline_ms.def;
+    settings.stall_ms = PROBE_FIELDS.stall_ms.def;
+  }
+  if(settings.switch_ratio_now >= settings.switch_ratio) {
+    settings.switch_ratio_now = PROBE_FIELDS.switch_ratio_now.def;
+    settings.switch_ratio = PROBE_FIELDS.switch_ratio.def;
+  }
+
+  const country = typeof(value.country) === 'string' && /^[A-Z]{2}$/.test(value.country) ? value.country : '';
+  return {settings, country};
+}
+
+/**
+ * pluma_edge of the app config (version 1, ADR 0072 of the server repository): whether the country
+ * of the client starts with the edges, and the edges it lists, in its order, of those the build
+ * carries (an edge the build does not know is never reached). undefined for anything else.
+ */
+export function parseEdgeConfig(value: unknown, built: readonly string[]): {edgesFirst: boolean, edges: string[]} | undefined {
+  if(!isObject(value) || value.v !== 1 || !Array.isArray(value.ws) || !Array.isArray(value.order)) {
+    return undefined;
+  }
+
+  const edges: string[] = [];
+  for(const url of value.ws) {
+    if(typeof(url) === 'string' && built.includes(url) && !edges.includes(url)) {
+      edges.push(url);
+    }
+  }
+
+  return {edgesFirst: value.order[0] === 'edge', edges};
+}
+
+// --- messages ------------------------------------------------------------------------------------
+
+const CRC_REQ_PQ_MULTI = 0xbe7e8ef1;
+const CRC_RES_PQ = 0x05162463;
+const CRC_PROBE = 0x5c316d30;
+const CRC_PROBE_DATA = 0x6ab3780b;
+const PROBE_CHUNK = 16384;
+const PROBE_MIN_DOWN = 16384;
+const PROBE_MAX_DOWN = 524288;
+const HEADER = 20; // auth_key_id, msg_id, message_data_length
+
+/** The bytes the gateway sends for down asked. */
+export function clampDown(down: number) {
+  return Math.min(Math.max(down, PROBE_MIN_DOWN), PROBE_MAX_DOWN);
+}
+
+/**
+ * An unencrypted message: auth_key_id 0, a msg_id of the time now (unix ms) as req_pq's is, the
+ * length and the data.
+ */
+export function plainMessage(data: Uint8Array, now: number) {
+  const out = new Uint8Array(HEADER + data.length);
+  const view = new DataView(out.buffer);
+  const seconds = Math.floor(now / 1000);
+  const fraction = Math.floor((now - seconds * 1000) / 1000 * 0x100000000);
+  view.setUint32(8, (fraction & ~3) >>> 0, true);
+  view.setUint32(12, seconds >>> 0, true);
+  view.setUint32(16, data.length, true);
+  out.set(data, HEADER);
+  return out;
+}
+
+/** req_pq_multi#be7e8ef1 nonce:int128 */
+export function reqPqMulti(nonce: Uint8Array) {
+  const out = new Uint8Array(4 + 16);
+  new DataView(out.buffer).setUint32(0, CRC_REQ_PQ_MULTI, true);
+  out.set(nonce, 4);
+  return out;
+}
+
+/** pluma.probe#5c316d30 nonce:int128 down:int pad:bytes */
+export function probeRequest(nonce: Uint8Array, down: number, pad: Uint8Array) {
+  const prefix = pad.length < 254 ? 1 : 4;
+  const padSize = (prefix + pad.length + 3) & ~3;
+  const out = new Uint8Array(4 + 16 + 4 + padSize);
+  const view = new DataView(out.buffer);
+  view.setUint32(0, CRC_PROBE, true);
+  out.set(nonce, 4);
+  view.setInt32(20, down, true);
+  if(prefix === 1) {
+    out[24] = pad.length;
+  } else {
+    out[24] = 254;
+    out[25] = pad.length & 0xff;
+    out[26] = (pad.length >> 8) & 0xff;
+    out[27] = (pad.length >> 16) & 0xff;
+  }
+  out.set(pad, 24 + prefix);
+  return out;
+}
+
+/**
+ * The packets of the gateway's abridged transport, however the stream is cut: a length byte below
+ * 127 (in words), or 127 and three bytes of it.
+ */
+export class AbridgedReader {
+  private buffer = new Uint8Array(0);
+
+  public push(bytes: Uint8Array): Uint8Array[] {
+    const joined = new Uint8Array(this.buffer.length + bytes.length);
+    joined.set(this.buffer);
+    joined.set(bytes, this.buffer.length);
+
+    const packets: Uint8Array[] = [];
+    let offset = 0;
+    while(offset < joined.length) {
+      let length: number, start: number;
+      if(joined[offset] < 0x7f) {
+        length = joined[offset] * 4;
+        start = offset + 1;
+      } else if(joined[offset] === 0x7f) {
+        if(joined.length - offset < 4) {
+          break;
+        }
+        length = (joined[offset + 1] | (joined[offset + 2] << 8) | (joined[offset + 3] << 16)) * 4;
+        start = offset + 4;
+      } else {
+        throw new Error('not an abridged packet');
+      }
+
+      if(joined.length - start < length) {
+        break;
+      }
+      packets.push(joined.slice(start, start + length));
+      offset = start + length;
+    }
+
+    this.buffer = joined.slice(offset);
+    return packets;
+  }
+}
+
+/** The data of an unencrypted message, undefined for anything else. */
+export function plainData(packet: Uint8Array) {
+  if(packet.length < HEADER) {
+    return undefined;
+  }
+  const view = new DataView(packet.buffer, packet.byteOffset, packet.byteLength);
+  if(view.getUint32(0, true) !== 0 || view.getUint32(4, true) !== 0) {
+    return undefined;
+  }
+  const length = view.getUint32(16, true);
+  if(length > packet.length - HEADER) {
+    return undefined;
+  }
+  return packet.subarray(HEADER, HEADER + length);
+}
+
+function sameBytes(a: Uint8Array, b: Uint8Array) {
+  if(a.length !== b.length) {
+    return false;
+  }
+  for(let i = 0; i < a.length; ++i) {
+    if(a[i] !== b[i]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Whether data is resPQ (up to its nonce) of the req_pq_multi with nonce. */
+export function isResPQ(data: Uint8Array, nonce: Uint8Array) {
+  return data.length >= 4 + 16 &&
+    new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(0, true) === CRC_RES_PQ &&
+    sameBytes(data.subarray(4, 20), nonce);
+}
+
+/** pluma.probeData of the probe with nonce: its seq, total and the length of its pad, or why not. */
+export function parseProbeData(data: Uint8Array, nonce: Uint8Array): {seq: number, total: number, pad: number} | string {
+  if(data.length < 4 + 16 + 4 + 4 + 8 + 4) {
+    return 'short message';
+  }
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  if(view.getUint32(0, true) !== CRC_PROBE_DATA) {
+    return 'not pluma.probeData';
+  }
+  if(!sameBytes(data.subarray(4, 20), nonce)) {
+    return 'pluma.probeData of another probe';
+  }
+  const seq = view.getInt32(20, true);
+  const total = view.getInt32(24, true);
+  let pad: number, prefix: number;
+  if(data[36] < 254) {
+    pad = data[36];
+    prefix = 1;
+  } else if(data[36] === 254) {
+    pad = data[37] | (data[38] << 8) | (data[39] << 16);
+    prefix = 4;
+  } else {
+    return 'bad pad';
+  }
+  if(36 + prefix + pad > data.length) {
+    return 'pad past the message';
+  }
+  return {seq, total, pad};
+}
+
+/**
+ * What the answer to a probe of down bytes must be: total messages, seq in order, the pads adding up
+ * to the bytes the gateway sends. Fed the parsed messages one by one; says 'more', 'done' or why not.
+ */
+export class ProbeAnswer {
+  private next = 0;
+  private total = 0;
+  public received = 0;
+  private down: number;
+
+  constructor(down: number) {
+    this.down = clampDown(down);
+  }
+
+  public add(message: {seq: number, total: number, pad: number}): 'more' | 'done' | string {
+    if(message.total < 1 || message.seq !== this.next || (this.total && message.total !== this.total)) {
+      return `pluma.probeData ${message.seq} of ${message.total} after ${this.next} of ${this.total}`;
+    }
+    this.total = message.total;
+    this.received += message.pad;
+    ++this.next;
+    if(message.seq < message.total - 1) {
+      return 'more';
+    }
+    return this.received === this.down ? 'done' : `${this.received} bytes of ${this.down}`;
+  }
+}
+
+// --- the meter -----------------------------------------------------------------------------------
+
+/**
+ * The timing of a probe by the bytes as they arrive. frozen: the path carried something (the
+ * WebSocket handshake, resPQ, a part of the answer), then nothing for the stall time, counted from
+ * the later of the last byte and the request written plus the round trip; slow: by the deadline not
+ * all came, but the bytes kept coming; failed: not a byte by the deadline.
+ */
+export class ProbeMeter {
+  private stall: number;
+  private seen = false;
+  private lastByte = 0;
+  private from = 0;
+  private deadline = 0;
+  private answering = false;
+  private firstAt = 0;
+  private firstBytes = 0;
+  private lastAt = 0;
+  public answerBytes = 0;
+
+  constructor(stall: number) {
+    this.stall = stall;
+  }
+
+  /** The connection is open: the path answered its handshake. */
+  public opened(now: number) {
+    this.seen = true;
+    this.lastByte = now;
+  }
+
+  public bytes(now: number, n: number) {
+    this.seen = true;
+    this.lastByte = now;
+    if(this.answering) {
+      if(!this.answerBytes) {
+        this.firstAt = now;
+        this.firstBytes = n;
+      }
+      this.answerBytes += n;
+      this.lastAt = now;
+    }
+  }
+
+  /** A request written at sent, answered after rtt at the earliest, wholly by deadline. */
+  public wait(sent: number, rtt: number, deadline: number, answer: boolean) {
+    this.from = sent + rtt;
+    this.deadline = deadline;
+    this.answering = answer;
+  }
+
+  public check(now: number): 'frozen' | 'slow' | 'failed' | undefined {
+    if(this.seen && now - Math.max(this.from, this.lastByte) >= this.stall) {
+      return 'frozen';
+    }
+    if(now >= this.deadline) {
+      return this.seen ? 'slow' : 'failed';
+    }
+    return undefined;
+  }
+
+  /** The bytes after the first read of the answer over the time from it to the last one. */
+  public bps() {
+    const span = this.lastAt - this.firstAt;
+    return this.answerBytes > this.firstBytes && span > 0 ? (this.answerBytes - this.firstBytes) / span * 1000 : 0;
+  }
+}
+
+// --- the score and the memory --------------------------------------------------------------------
+
+// The score of a path is the time of a notional 256 KiB answer: its round trip and the bytes at its
+// speed, in ms.
+const SCORE_BYTES = 256 * 1024;
+// Scores within this ratio are a tie, which the order of the country breaks.
+const TIE_RATIO = 0.7;
+// The probes a path's losses are counted over, and the losses that double its score.
+const HISTORY = 4;
+const LOSSES = 2;
+const MAX_NETWORKS = 16;
+const FRESH = 7 * 86400e3;
+
+export function pathScore(result: ProbeResult) {
+  return passed(result) && result.bps > 0 ? result.rtt + SCORE_BYTES / result.bps * 1000 : Infinity;
+}
+
+/** Whether a probe found the path carrying: all the bytes, or some of them still coming. */
+export function passed(result: ProbeResult) {
+  return result.outcome === 'ok' || result.outcome === 'slow';
+}
+
+export type PathRecord = {
+  // the score of the last probe that passed
+  score?: number,
+  outcome: ProbeOutcome,
+  at: number,
+  // the outcomes of the last probes, the latest last
+  history: ProbeOutcome[],
+  // out of races until then: frozen (bad_ttl_s), failed while others carried (failed_ttl_s)
+  excludedUntil?: number
+};
+
+export type NetworkRecord = {
+  at: number,
+  best?: string,
+  // the last ranking probes, the last switch
+  ranked?: number,
+  switched?: number,
+  // a path that won a ranking by switch_ratio once, waiting for the second win
+  pending?: {url: string, at: number},
+  paths: {[url: string]: PathRecord}
+};
+
+export type PathMemory = {
+  v: 1,
+  // the country of the last app config
+  country?: string,
+  networks: {[key: string]: NetworkRecord}
+};
+
+const OUTCOMES: ProbeOutcome[] = ['ok', 'slow', 'frozen', 'failed', 'unsupported'];
+
+function isTime(x: unknown): x is number {
+  return typeof(x) === 'number' && Number.isFinite(x) && x >= 0;
+}
+
+/** The memory as storage kept it, of the paths this build has; anything else is dropped. */
+export function readMemory(value: unknown, paths: readonly string[]): PathMemory {
+  const memory: PathMemory = {v: 1, networks: {}};
+  if(!isObject(value) || value.v !== 1 || !isObject(value.networks)) {
+    return memory;
+  }
+  if(typeof(value.country) === 'string' && /^([A-Z]{2})?$/.test(value.country)) {
+    memory.country = value.country;
+  }
+
+  for(const key in value.networks) {
+    const net = value.networks[key];
+    if(!isObject(net) || !isTime(net.at) || !isObject(net.paths) || !/^([A-Z]{2})?$/.test(key)) {
+      continue;
+    }
+    const record: NetworkRecord = {at: net.at, paths: {}};
+    if(typeof(net.best) === 'string' && paths.includes(net.best)) record.best = net.best;
+    if(isTime(net.ranked)) record.ranked = net.ranked;
+    if(isTime(net.switched)) record.switched = net.switched;
+    if(isObject(net.pending) && typeof(net.pending.url) === 'string' && paths.includes(net.pending.url) && isTime(net.pending.at)) {
+      record.pending = {url: net.pending.url, at: net.pending.at};
+    }
+    for(const url in net.paths) {
+      const path = net.paths[url];
+      if(!paths.includes(url) || !isObject(path) || !OUTCOMES.includes(path.outcome as ProbeOutcome) || !isTime(path.at) || !Array.isArray(path.history)) {
+        continue;
+      }
+      const out: PathRecord = {
+        outcome: path.outcome as ProbeOutcome,
+        at: path.at,
+        history: path.history.filter((x): x is ProbeOutcome => OUTCOMES.includes(x as ProbeOutcome)).slice(-HISTORY)
+      };
+      if(isTime(path.score)) out.score = path.score;
+      if(isTime(path.excludedUntil)) out.excludedUntil = path.excludedUntil;
+      record.paths[url] = out;
+    }
+    memory.networks[key] = record;
+  }
+
+  evict(memory);
+  return memory;
+}
+
+function evict(memory: PathMemory) {
+  const keys = Object.keys(memory.networks).sort((a, b) => memory.networks[b].at - memory.networks[a].at);
+  for(const key of keys.slice(MAX_NETWORKS)) {
+    delete memory.networks[key];
+  }
+}
+
+/** The record of a network, made when there is none; the least recent go beyond MAX_NETWORKS. */
+export function networkRecord(memory: PathMemory, key: string, now: number) {
+  let net = memory.networks[key];
+  if(!net) {
+    net = memory.networks[key] = {at: now, paths: {}};
+    evict(memory);
+  }
+  return net;
+}
+
+/** Whether a network's record is recent enough to start with its best path. */
+export function isFresh(net: NetworkRecord | undefined, now: number): net is NetworkRecord {
+  return !!net && now - net.at < FRESH;
+}
+
+export function isExcluded(net: NetworkRecord | undefined, url: string, now: number) {
+  const until = net?.paths[url]?.excludedUntil;
+  return until !== undefined && now < until;
+}
+
+/**
+ * Keeps a probe of a path. A frozen path is out of races for bad_ttl_s, a failed one for
+ * failed_ttl_s; a path that passes is back. Called only when some path of the round carried: when
+ * none did, the network is down, not the paths. An unsupported probe is no verdict and is not kept.
+ */
+export function recordProbe(net: NetworkRecord, url: string, result: ProbeResult, now: number, settings: ProbeSettings) {
+  if(result.outcome === 'unsupported') {
+    return;
+  }
+  const path = net.paths[url] ??= {outcome: result.outcome, at: now, history: []};
+  path.outcome = result.outcome;
+  path.at = now;
+  path.history = path.history.concat(result.outcome).slice(-HISTORY);
+  if(passed(result)) {
+    const score = pathScore(result);
+    if(score !== Infinity) {
+      path.score = score;
+    }
+    delete path.excludedUntil;
+  } else {
+    path.excludedUntil = now + (result.outcome === 'frozen' ? settings.bad_ttl_s : settings.failed_ttl_s) * 1000;
+  }
+  net.at = now;
+}
+
+/** The score of a path as the choice takes it: doubled with LOSSES of its last HISTORY probes not ok. */
+export function effectiveScore(path: PathRecord | undefined) {
+  if(!path || path.score === undefined) {
+    return Infinity;
+  }
+  const losses = path.history.filter((outcome) => outcome !== 'ok').length;
+  return losses >= LOSSES ? path.score * 2 : path.score;
+}
+
+/** The paths in the order of the country: the edges first where it starts with them, else the server. */
+export function preference(server: string, edges: readonly string[], edgesFirst: boolean) {
+  return edgesFirst ? [...edges, server] : [server, ...edges];
+}
+
+/** The best of scored paths: the lowest score, unless one before it in preference is within a tie. */
+export function pickBest(scored: {url: string, score: number}[], order: readonly string[]) {
+  const finite = scored.filter((x) => x.score !== Infinity);
+  if(!finite.length) {
+    return undefined;
+  }
+  const min = Math.min(...finite.map((x) => x.score));
+  const rank = (url: string) => {
+    const i = order.indexOf(url);
+    return i < 0 ? order.length : i;
+  };
+  return finite
+  .filter((x) => x.score * TIE_RATIO <= min)
+  .sort((a, b) => rank(a.url) - rank(b.url) || a.score - b.score)[0].url;
+}
+
+/**
+ * The probes of a race, in two groups: the first starts at once, the second after race_stagger_ms
+ * while no path has passed, or as soon as the first group is out. The first group is the current
+ * path and the network's best when it has a fresh one, else the current path and the first group of
+ * the country's order. Paths out of races here are left out while any other is left.
+ */
+export function racePlan(o: {
+  candidates: readonly string[],
+  current: string,
+  best?: string,
+  first: readonly string[],
+  excluded: (url: string) => boolean
+}) {
+  let candidates = o.candidates.filter((url) => !o.excluded(url));
+  if(!candidates.length) {
+    candidates = o.candidates.slice();
+  }
+  const wanted = [o.current, ...(o.best ? [o.best] : o.first)];
+  const now = candidates.filter((url) => wanted.includes(url));
+  const later = candidates.filter((url) => !now.includes(url));
+  return now.length ? {now, later} : {now: later, later: [] as string[]};
+}
+
+/** Whether a ranking probes the other edges too: the country starts with them, or the server's own path is poor. */
+export function rankEdgesToo(edgesFirst: boolean, direct: ProbeResult | undefined, settings: ProbeSettings) {
+  return edgesFirst || !direct || !passed(direct) || pathScore(direct) > settings.edge_probe_if_direct_ms;
+}
+
+export type RankDecision =
+  {kind: 'stay'} |
+  {kind: 'switch', url: string, emergency: boolean} |
+  {kind: 'confirm', url: string};
+
+/**
+ * What a ranking means, its probes kept in net. The current path failing is an emergency: the best
+ * other that passed at once. Otherwise the best other takes over when its score is at most
+ * switch_ratio_now of the current one's, or at most switch_ratio of it in two rankings in a row (the
+ * second confirm_s after the first; a win is kept as pending), and min_dwell_s after the last switch.
+ */
+export function decideRank(o: {
+  net: NetworkRecord,
+  current: string,
+  results: Map<string, ProbeResult>,
+  order: readonly string[],
+  now: number,
+  settings: ProbeSettings
+}): RankDecision {
+  const {net, current, settings, now} = o;
+  const others = [...o.results.entries()]
+  .filter(([url, result]) => url !== current && passed(result))
+  .map(([url]) => ({url, score: effectiveScore(net.paths[url])}));
+  const best = pickBest(others, o.order);
+  const currentResult = o.results.get(current);
+
+  if(currentResult && !passed(currentResult) && currentResult.outcome !== 'unsupported') {
+    delete net.pending;
+    return best ? {kind: 'switch', url: best, emergency: true} : {kind: 'stay'};
+  }
+  // Without a probe of the current path that passed there is nothing to compare with.
+  if(!currentResult || !passed(currentResult)) {
+    return {kind: 'stay'};
+  }
+
+  const currentScore = effectiveScore(net.paths[current]);
+  const bestScore = best ? effectiveScore(net.paths[best]) : Infinity;
+  if(!best || bestScore === Infinity || bestScore > settings.switch_ratio * currentScore) {
+    delete net.pending;
+    return {kind: 'stay'};
+  }
+
+  if(now - (net.switched ?? 0) < settings.min_dwell_s * 1000) {
+    return {kind: 'stay'};
+  }
+
+  const confirmed = net.pending?.url === best && now - net.pending.at <= 2 * settings.confirm_s * 1000;
+  if(bestScore <= settings.switch_ratio_now * currentScore || confirmed) {
+    delete net.pending;
+    return {kind: 'switch', url: best, emergency: false};
+  }
+
+  net.pending = {url: best, at: now};
+  return {kind: 'confirm', url: best};
+}
+"""
+
+# The probes and the switches, a new file of the checkout.
+PATH_SELECTOR_TS = r"""/*
+ * pluma: the path to the server this worker connects by (task 113, ADR 0073 of the server repository).
+ *
+ * The paths are the server's own WebSocket URL and its edges', all of them URLs the build carries
+ * (dcConfigurator.ts). A page starts on the path of its host (the edge it was loaded from, or the
+ * server), or on the best path of its network when it has a fresh one, and probes the paths at once,
+ * each on a connection of its own (pathChoice.ts): the first that carries the whole gate probe wins,
+ * and the current path keeps its place if it passes within race_stagger_ms of the winner. Five
+ * seconds later, and every reprobe_s, a ranking probe of the server's path and the current one (of
+ * the other edges too where the country starts with them or the server's path is poor) may move
+ * every connection to a path that is clearly better. A pong that keeps the client waiting
+ * suspect_ms with not a byte, the browser going online, and a new country in the app config run the
+ * race again. The memory of paths is by country, the only thing a browser tells of its network, and
+ * it is kept in localStorage.
+ */
+
+import ctx from '@environment/ctx';
+import {getEnvironment} from '@environment/utils';
+import {IS_WEB_WORKER} from '@helpers/context';
+import randomize from '@helpers/array/randomize';
+import LocalStorageController from '@lib/localStorage';
+import {logger} from '@lib/logger';
+import abridgedPacketCodec from '@lib/mtproto/transports/abridged';
+import Obfuscation from '@lib/mtproto/transports/obfuscation';
+import Socket from '@lib/mtproto/transports/websocket';
+import SocketProxied from '@lib/mtproto/transports/socketProxied';
+import type {MTConnection, MTConnectionConstructable} from '@lib/mtproto/transports/transport';
+import {
+  AbridgedReader, PathMemory, ProbeAnswer, ProbeMeter, ProbeOutcome, ProbeResult, ProbeSettings,
+  PROBE_DEFAULTS, decideRank, isExcluded, isFresh, isResPQ, networkRecord, parseEdgeConfig, parseProbeConfig,
+  parseProbeData, passed, plainData, plainMessage, preference, probeRequest, racePlan, rankEdgesToo,
+  readMemory, recordProbe, reqPqMulti
+} from '@lib/mtproto/pathChoice';
+
+export type PathSwitcher = {
+  // moves every connection of an account to url
+  switchTo: (url: string) => void,
+  // whether a file is being loaded or sent
+  busy: () => boolean,
+  // asks the server for the app config again
+  refreshAppConfig: () => void
+};
+
+type PathStorage = {pluma_paths: PathMemory};
+
+const LAUNCH_RANK_DELAY = 5e3;
+// A change of network runs the race and a ranking at most this often, a suspect pong the race.
+const NETWORK_INTERVAL = 2 * 60e3;
+const SUSPECT_INTERVAL = 60e3;
+// A ranking's switch waits for the end of a file's transfer this long at most.
+const BUSY_WAIT = 2 * 60e3;
+const BUSY_RETRY = 5e3;
+// A race no path passed runs again after this, doubled each time.
+const RACE_RETRY_MIN = 2e3;
+const RACE_RETRY_MAX = 5 * 60e3;
+const METER_TICK = 50;
+
+/** The connection tweb's own WebSocket transport would make (dcConfigurator.ts, transportSocket). */
+function connectionClass(): MTConnectionConstructable {
+  if(import.meta.env.VITE_MTPROTO_SW || !import.meta.env.VITE_SAFARI_PROXY_WEBSOCKET) {
+    return Socket;
+  }
+  return (getEnvironment().IS_SAFARI && IS_WEB_WORKER && typeof(SocketProxied) !== 'undefined') ? SocketProxied : Socket;
+}
+
+/**
+ * Probes the path url: req_pq_multi and, after resPQ, pluma.probe for down bytes with up bytes of
+ * random pad, over obfuscated2 and the abridged transport as TcpObfuscated speaks them. A gateway
+ * that closes the connection after resPQ with not a byte of the answer has no probes (or refused
+ * this one): unsupported, no verdict on the path.
+ */
+function probePath(url: string, down: number, up: number, settings: ProbeSettings): Promise<ProbeResult> {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const meter = new ProbeMeter(settings.stall_ms);
+    meter.wait(started, 0, started + settings.deadline_ms, false);
+    const reader = new AbridgedReader();
+    const answer = new ProbeAnswer(down);
+    const obfuscation = new Obfuscation();
+    const nonce = randomize(new Uint8Array(16));
+    let state: 'connecting' | 'resPQ' | 'probe' = 'connecting';
+    let requested = 0, rtt = 0, finished = false;
+    // obfuscated2 is a stream: what is encoded and decoded goes in order.
+    let sending = Promise.resolve();
+    let receiving = Promise.resolve();
+
+    const connection: MTConnection = new (connectionClass())(1, url, '-P');
+
+    const finish = (outcome: ProbeOutcome, why?: string) => {
+      if(finished) {
+        return;
+      }
+      finished = true;
+      clearInterval(timer);
+      connection.removeEventListener('open', onOpen);
+      connection.removeEventListener('message', onMessage);
+      connection.removeEventListener('close', onClose);
+      connection.close();
+      obfuscation.destroy();
+      resolve({outcome, rtt, bps: meter.bps(), received: answer.received, why});
+    };
+
+    const send = (body: Uint8Array) => {
+      sending = sending.then(async() => {
+        const encoded = await obfuscation.encode(abridgedPacketCodec.encodePacket(plainMessage(body, Date.now())));
+        if(!finished) {
+          connection.send(encoded);
+        }
+      });
+      sending.catch((err) => finish('failed', String(err)));
+    };
+
+    const onPacket = (packet: Uint8Array, at: number) => {
+      // A transport error instead of the answer: the gateway refused this probe.
+      if(packet.length === 4) {
+        finish(state === 'probe' && !answer.received ? 'unsupported' : 'failed', 'a transport error');
+        return;
+      }
+      const data = plainData(packet);
+      if(!data) {
+        finish('failed', 'not an unencrypted message');
+        return;
+      }
+
+      if(state === 'resPQ') {
+        if(!isResPQ(data, nonce)) {
+          finish('failed', 'req_pq_multi not answered by its resPQ');
+          return;
+        }
+        rtt = at - requested;
+        state = 'probe';
+        const now = Date.now();
+        meter.wait(now, rtt, now + settings.deadline_ms, true);
+        send(probeRequest(nonce, down, randomize(new Uint8Array(up))));
+        return;
+      }
+
+      const message = parseProbeData(data, nonce);
+      const progress = typeof(message) === 'string' ? message : answer.add(message);
+      if(progress === 'done') {
+        finish('ok');
+      } else if(progress !== 'more') {
+        finish('failed', progress);
+      }
+    };
+
+    const onOpen = () => {
+      meter.opened(Date.now());
+      sending = sending.then(async() => {
+        const init = await obfuscation.init(abridgedPacketCodec);
+        if(finished) {
+          return;
+        }
+        connection.send(init);
+        requested = Date.now();
+        state = 'resPQ';
+        meter.wait(requested, requested - started, requested + settings.deadline_ms, false);
+      });
+      send(reqPqMulti(nonce));
+    };
+
+    const onMessage = (buffer: ArrayBuffer) => {
+      const at = Date.now();
+      meter.bytes(at, buffer.byteLength);
+      receiving = receiving.then(async() => {
+        const data = await obfuscation.decode(new Uint8Array(buffer));
+        for(const packet of reader.push(data)) {
+          if(finished) {
+            return;
+          }
+          onPacket(packet, at);
+        }
+      });
+      receiving.catch((err) => finish('failed', String(err)));
+    };
+
+    const onClose = () => {
+      // What came before the close is read first.
+      const closed = () => finish(state === 'probe' && !meter.answerBytes ? 'unsupported' : 'failed', 'closed');
+      receiving.then(closed, closed);
+    };
+
+    const timer = ctx.setInterval(() => {
+      const outcome = meter.check(Date.now());
+      if(outcome) {
+        // No resPQ by the deadline is no answer to measure.
+        finish(outcome === 'slow' && state !== 'probe' ? 'failed' : outcome, state);
+      }
+    }, METER_TICK);
+
+    connection.addEventListener('open', onOpen);
+    connection.addEventListener('message', onMessage);
+    connection.addEventListener('close', onClose);
+  });
+}
+
+/** The host of a path, which is all the log names of it. */
+function host(url: string) {
+  return url.slice(url.indexOf('//') + 2).split('/')[0];
+}
+
+function describe(result: ProbeResult) {
+  return `${result.outcome} rtt=${result.rtt}ms bps=${Math.round(result.bps)}` + (result.why ? ` (${result.why})` : '');
+}
+
+export class PathSelector {
+  private log = logger('PATHS');
+  private storage: LocalStorageController<PathStorage>;
+  private started = false;
+  private server: string;
+  private edges: string[] = [];
+  private page: string;
+  private current: string;
+
+  private settings: ProbeSettings = {...PROBE_DEFAULTS};
+  private country: string;
+  // pluma_edge of the last app config, read against the build's edges
+  private edgeValue: unknown;
+  private appConfigHash: number;
+  private memory: PathMemory = {v: 1, networks: {}};
+  private loaded = false;
+  // the gateway answered no probe: none until the next app config
+  private unsupported = false;
+
+  private switchers = new Set<PathSwitcher>();
+  private racing: Promise<boolean>;
+  private ranking: Promise<void>;
+  private raceRetry = RACE_RETRY_MIN;
+  private raceRetryTimer: number;
+  private rankTimer: number;
+  // the rankings are scheduled: the first LAUNCH_RANK_DELAY after a race that carried, then each
+  // after the last
+  private rankArmed = false;
+  private pendingSwitch: string;
+  private busySince = 0;
+  private lastNetworkChange = 0;
+  private lastSuspect = 0;
+
+  /**
+   * The path to connect by. The first call, from the worker that makes the transports, starts the
+   * choice among the server's own URL and its edges' (by host).
+   */
+  public url(server: string, edges: Map<string, string>) {
+    if(!this.started) {
+      this.start(server, edges);
+    }
+    return this.current;
+  }
+
+  public addSwitcher(switcher: PathSwitcher) {
+    this.switchers.add(switcher);
+  }
+
+  /** The time a pong may keep the client waiting with not a byte before the path is suspect. */
+  public suspectAfter() {
+    return this.settings.suspect_ms;
+  }
+
+  /** pluma_probe and pluma_edge of an app config, the cached one at start included. */
+  public setAppConfig(appConfig: {[key: string]: unknown, hash?: number}) {
+    const probe = parseProbeConfig(appConfig.pluma_probe);
+    this.settings = probe ? probe.settings : {...PROBE_DEFAULTS};
+    this.edgeValue = appConfig.pluma_edge;
+    if(appConfig.hash !== this.appConfigHash) {
+      this.appConfigHash = appConfig.hash;
+      if(this.unsupported) {
+        // The server may answer probes now.
+        this.unsupported = false;
+        if(this.loaded) {
+          this.begin('config');
+        }
+      }
+    }
+
+    if(probe && probe.country !== this.country) {
+      const known = this.country !== undefined;
+      this.country = probe.country;
+      if(this.loaded) {
+        this.memory.country = probe.country;
+        this.save();
+      }
+      if(known) {
+        this.log('the country changed');
+        this.networkChanged();
+      }
+    }
+  }
+
+  /** The browser came online, or the user asked to reconnect. */
+  public networkChanged() {
+    const now = Date.now();
+    if(!this.active() || !this.loaded || now - this.lastNetworkChange < NETWORK_INTERVAL) {
+      return;
+    }
+    this.lastNetworkChange = now;
+    this.refreshAppConfig();
+    this.race('network').then((carried) => {
+      if(carried) {
+        this.rank('network');
+      }
+    });
+  }
+
+  /** A pong kept the client waiting suspect_ms with not a byte. */
+  public suspect() {
+    const now = Date.now();
+    if(!this.active() || !this.loaded || now - this.lastSuspect < SUSPECT_INTERVAL) {
+      return;
+    }
+    this.lastSuspect = now;
+    this.log('no answer on the current path, probing the paths');
+    this.race('suspect');
+  }
+
+  private start(server: string, edges: Map<string, string>) {
+    this.started = true;
+    this.server = server;
+    this.edges = [...edges.values()];
+    // A page loaded from one of the server's edges reached the server through it; in a worker location
+    // is the worker's, of the page's origin (config/app.ts reads it there too).
+    this.current = this.page = edges.get(location.host) ?? server;
+    if(!this.edges.length) {
+      return;
+    }
+
+    this.storage = new LocalStorageController<PathStorage>();
+    this.storage.get('pluma_paths').then((value) => {
+      this.memory = readMemory(value, this.paths());
+    }, (err) => {
+      this.log.error('cannot read the paths', err);
+    }).finally(() => {
+      this.loaded = true;
+      this.country ??= this.memory.country;
+      this.memory.country = this.country;
+      this.begin('launch');
+    });
+  }
+
+  /** The race at start, or when the server may answer probes again; the rankings follow it. */
+  private begin(why: string) {
+    this.race(why).then((carried) => {
+      if(carried && why === 'launch') {
+        // The only sign of a new network a browser gives at start is the country of the app config.
+        this.refreshAppConfig();
+      }
+    });
+  }
+
+  private active() {
+    return this.started && this.edges.length > 0 && !this.unsupported;
+  }
+
+  private paths() {
+    return [this.server, ...this.edges];
+  }
+
+  private key() {
+    return this.country ?? '';
+  }
+
+  /** pluma_edge: whether the country starts with the edges, and its edges; without it, every edge, the server first. */
+  private edgeConfig() {
+    return parseEdgeConfig(this.edgeValue, this.edges) ?? {edgesFirst: false, edges: this.edges};
+  }
+
+  private edgesFirst() {
+    return this.edgeConfig().edgesFirst;
+  }
+
+  /** The paths in the country's order: its edges, the page's own path and the current one always. */
+  private candidates() {
+    const out = preference(this.server, this.edgeConfig().edges, this.edgesFirst());
+    for(const url of [this.page, this.current]) {
+      if(!out.includes(url)) {
+        out.push(url);
+      }
+    }
+    return out;
+  }
+
+  private firstGroup() {
+    const config = this.edgeConfig();
+    return config.edgesFirst ? config.edges : [this.server];
+  }
+
+  private refreshAppConfig() {
+    this.switchers.forEach((switcher) => switcher.refreshAppConfig());
+  }
+
+  private save() {
+    this.storage.set({pluma_paths: this.memory}).catch((err) => {
+      this.log.error('cannot keep the paths', err);
+    });
+  }
+
+  private switchTo(url: string, why: string) {
+    const net = networkRecord(this.memory, this.key(), Date.now());
+    net.best = url;
+    if(url === this.current) {
+      return;
+    }
+    this.log(`${why}: ${host(this.current)} -> ${host(url)}`);
+    net.switched = Date.now();
+    this.current = url;
+    this.pendingSwitch = undefined;
+    this.busySince = 0;
+    this.switchers.forEach((switcher) => switcher.switchTo(url));
+  }
+
+  /**
+   * The race of gate probes. Resolves whether some path carried; when none did, the network is down,
+   * nothing is kept and the race runs again later.
+   */
+  private race(why: string) {
+    if(!this.active()) {
+      return Promise.resolve(false);
+    }
+    return this.racing ??= this.runRace(why).then((carried) => {
+      this.racing = undefined;
+      clearTimeout(this.raceRetryTimer);
+      if(carried || this.unsupported) {
+        this.raceRetry = RACE_RETRY_MIN;
+        if(carried && !this.rankArmed) {
+          this.scheduleRank(LAUNCH_RANK_DELAY, false);
+        }
+      } else {
+        this.raceRetryTimer = ctx.setTimeout(() => this.race('retry'), this.raceRetry);
+        this.raceRetry = Math.min(this.raceRetry * 2, RACE_RETRY_MAX);
+      }
+      return carried;
+    });
+  }
+
+  private runRace(why: string) {
+    const settings = this.settings;
+    const started = Date.now();
+    const net = this.memory.networks[this.key()];
+    const fresh = isFresh(net, started);
+    const best = fresh && net.best && !isExcluded(net, net.best, started) ? net.best : undefined;
+    if(best && best !== this.current && why === 'launch') {
+      // The best path of this network takes the connections at once; the race checks it.
+      this.switchTo(best, 'remembered');
+    }
+    const plan = racePlan({
+      candidates: this.candidates(),
+      current: this.current,
+      best,
+      first: this.firstGroup(),
+      excluded: (url) => isExcluded(net, url, started)
+    });
+
+    return new Promise<boolean>((resolve) => {
+      const results = new Map<string, ProbeResult>();
+      const launched: string[] = [];
+      let winner: string, decided = false, laterLaunched = !plan.later.length, waitTimer: number;
+
+      const decide = (url: string) => {
+        if(decided) {
+          return;
+        }
+        decided = true;
+        clearTimeout(waitTimer);
+        this.switchTo(url, `race (${why})`);
+      };
+
+      const launch = (urls: string[]) => {
+        for(const url of urls) {
+          if(launched.includes(url)) {
+            continue;
+          }
+          launched.push(url);
+          probePath(url, settings.gate_down, settings.up, settings).then((result) => {
+            this.log(`gate ${host(url)}: ${describe(result)}`);
+            results.set(url, result);
+            onResult(url, result);
+          });
+        }
+      };
+
+      const launchLater = () => {
+        if(!laterLaunched) {
+          laterLaunched = true;
+          clearTimeout(laterTimer);
+          launch(plan.later);
+        }
+      };
+
+      const onResult = (url: string, result: ProbeResult) => {
+        const currentResult = results.get(this.current);
+        if(result.outcome === 'ok' && !decided) {
+          if(url === this.current) {
+            decide(url);
+          } else if(!winner) {
+            winner = url;
+            // The current path keeps its place if it passes soon after.
+            if(currentResult || !launched.includes(this.current)) {
+              decide(winner);
+            } else {
+              waitTimer = ctx.setTimeout(() => decide(winner), settings.race_stagger_ms);
+            }
+          }
+        } else if(url === this.current && winner && !decided) {
+          decide(winner);
+        }
+
+        // The first group out with no winner: the rest at once.
+        const pending = launched.some((x) => !results.has(x));
+        if(!pending && !winner && !laterLaunched) {
+          launchLater();
+          return;
+        }
+        if(pending || (!winner && !laterLaunched)) {
+          return;
+        }
+
+        clearTimeout(laterTimer);
+        resolve(this.keepRace(results));
+      };
+
+      launch(plan.now);
+      const laterTimer = ctx.setTimeout(() => {
+        if(!winner) {
+          launchLater();
+        }
+      }, settings.race_stagger_ms);
+    });
+  }
+
+  private keepRace(results: Map<string, ProbeResult>) {
+    const all = [...results.values()];
+    const carried = all.some(passed);
+    if(!carried) {
+      if(all.some((result) => result.outcome === 'unsupported')) {
+        this.log('the server answers no probes');
+        this.unsupported = true;
+      } else {
+        this.log('no path carried, the network is down');
+      }
+      return false;
+    }
+    const now = Date.now();
+    const net = networkRecord(this.memory, this.key(), now);
+    results.forEach((result, url) => recordProbe(net, url, result, now, this.settings));
+    this.save();
+    return true;
+  }
+
+  private scheduleRank(delay: number, force: boolean) {
+    this.rankArmed = true;
+    clearTimeout(this.rankTimer);
+    this.rankTimer = ctx.setTimeout(() => {
+      const net = this.memory.networks[this.key()];
+      if(force || !net?.ranked || Date.now() - net.ranked >= this.settings.rank_min_interval_s * 1000) {
+        this.rank('scheduled');
+      } else {
+        this.scheduleRank(this.settings.reprobe_s * 1000, true);
+      }
+    }, delay);
+  }
+
+  /** The ranking probes, and a switch to a path that is clearly better; then the next ranking. */
+  private rank(why: string) {
+    if(!this.active()) {
+      this.rankArmed = false;
+      return;
+    }
+    if(this.ranking) {
+      return;
+    }
+    if(this.racing) {
+      this.racing.then(() => this.rank(why));
+      return;
+    }
+    clearTimeout(this.rankTimer);
+    this.ranking = this.runRank(why).then((next) => {
+      this.ranking = undefined;
+      if(this.active()) {
+        this.scheduleRank(next, true);
+      } else {
+        this.rankArmed = false;
+      }
+    });
+  }
+
+  /** Resolves when the next ranking is due, in ms. */
+  private async runRank(why: string) {
+    const settings = this.settings;
+    const results = new Map<string, ProbeResult>();
+    const probe = (urls: string[]) => Promise.all(urls.filter((url) => !results.has(url)).map(async(url) => {
+      const result = await probePath(url, settings.rank_down, settings.up, settings);
+      this.log(`rank ${host(url)}: ${describe(result)}`);
+      results.set(url, result);
+    }));
+
+    // The server's own path always, so that a path that opens again is noticed; the other edges only
+    // where they are needed (ADR 0072: an edge sees only those who need it).
+    await probe([...new Set([this.server, this.current])]);
+    if(rankEdgesToo(this.edgesFirst(), results.get(this.server), settings)) {
+      await probe(this.candidates());
+    }
+
+    const all = [...results.values()];
+    if(!all.some(passed)) {
+      if(all.some((result) => result.outcome === 'unsupported')) {
+        this.log('the server answers no probes');
+        this.unsupported = true;
+      }
+      return settings.reprobe_s * 1000;
+    }
+    const now = Date.now();
+    const net = networkRecord(this.memory, this.key(), now);
+    results.forEach((result, url) => recordProbe(net, url, result, now, settings));
+    net.ranked = now;
+
+    const decision = decideRank({
+      net,
+      current: this.current,
+      results,
+      order: this.candidates(),
+      now,
+      settings
+    });
+    this.save();
+    if(decision.kind === 'confirm') {
+      this.log(`rank (${why}): ${host(decision.url)} is better, confirming`);
+      return settings.confirm_s * 1000;
+    }
+    if(decision.kind === 'switch') {
+      this.pendingSwitch = decision.url;
+      this.switchWhenIdle(decision.url, decision.emergency);
+    }
+    return settings.reprobe_s * 1000;
+  }
+
+  /** A ranking's switch waits for the end of a file's transfer, BUSY_WAIT at most; an emergency does not. */
+  private switchWhenIdle(url: string, emergency: boolean) {
+    if(this.pendingSwitch !== url) {
+      return;
+    }
+    const now = Date.now();
+    const busy = [...this.switchers].some((switcher) => switcher.busy());
+    if(emergency || !busy || (this.busySince && now - this.busySince >= BUSY_WAIT)) {
+      this.switchTo(url, emergency ? 'rank, the current path failed' : 'rank');
+      this.save();
+      return;
+    }
+    this.busySince ||= now;
+    ctx.setTimeout(() => this.switchWhenIdle(url, false), BUSY_RETRY);
+  }
+}
+
+const plumaPaths = new PathSelector();
+export default plumaPaths;
+"""
+
+# The edits, each (file, upstream's text, Pluma's). dcConfigurator.ts gets its
+# own in patch() (server_ws_url_body, server_ws_paths).
+PATH_EDITS = (
+    (API_MANAGER,
+     "import RepayRequestHandler from '@appManagers/utils/repayRequestHandler';\n",
+     "import RepayRequestHandler from '@appManagers/utils/repayRequestHandler';\n" + PATHS_IMPORT),
+    (API_MANAGER,
+     "    this.rootScope.addEventListener('premium_toggle', (isPremium) => {\n",
+     "    // pluma: the path to the server this worker chose (pathSelector.ts) takes every connection of\n"
+     "    // this account when it changes: the networkers', and a key exchange's that has none yet.\n"
+     "    plumaPaths.addSwitcher({\n"
+     "      switchTo: (url) => {\n"
+     "        const transports = new Set<TcpObfuscated>();\n"
+     "        this.iterateNetworkers(({networker, transportType}) => {\n"
+     "          if(transportType === 'websocket' && networker.transport) {\n"
+     "            transports.add(networker.transport as TcpObfuscated);\n"
+     "          }\n"
+     "        });\n"
+     "        const servers = this.dcConfigurator.chosenServers.websocket;\n"
+     "        for(const connectionType in servers) {\n"
+     "          const dcs = servers[connectionType as ConnectionType];\n"
+     "          for(const dcId in dcs) {\n"
+     "            dcs[dcId as any as DcId].forEach((transport) => transports.add(transport as TcpObfuscated));\n"
+     "          }\n"
+     "        }\n"
+     "        transports.forEach((transport) => transport.changeUrl(url));\n"
+     "      },\n"
+     "      busy: () => {\n"
+     "        let busy = false;\n"
+     "        this.iterateNetworkers(({networker}) => {\n"
+     "          busy ||= networker.isFileNetworker && networker.activeRequests > 0;\n"
+     "        });\n"
+     "        return busy;\n"
+     "      },\n"
+     "      refreshAppConfig: () => {\n"
+     "        Promise.resolve(this.getAppConfig(true)).catch((err) => {\n"
+     "          this.log.error('app config for the paths', err);\n"
+     "        });\n"
+     "      }\n"
+     "    });\n"
+     "\n"
+     "    this.rootScope.addEventListener('premium_toggle', (isPremium) => {\n"),
+    (API_MANAGER_METHODS,
+     "import LIMIT_DEFAULTS from '@config/limitDefaults';\n",
+     "import LIMIT_DEFAULTS from '@config/limitDefaults';\n" + PATHS_IMPORT),
+    (API_MANAGER_METHODS,
+     "  private applyAppConfig(appConfig: MTAppConfig, save?: boolean) {\n"
+     "    this.appConfig = appConfig;\n",
+     "  private applyAppConfig(appConfig: MTAppConfig, save?: boolean) {\n"
+     "    this.appConfig = appConfig;\n"
+     "    // pluma: the settings of the path probes and the client's country (pathSelector.ts).\n"
+     "    plumaPaths.setAppConfig(appConfig as unknown as {[key: string]: unknown, hash?: number});\n"),
+    (NETWORKER,
+     "import forEachReverse from '@helpers/array/forEachReverse';\n",
+     "import forEachReverse from '@helpers/array/forEachReverse';\n" + PATHS_IMPORT),
+    (NETWORKER,
+     "    const rejectTimeout = ctx.setTimeout(deferred.reject.bind(deferred), timeoutTime);\n"
+     "\n"
+     "    const onResolved = (reason: string) => {\n"
+     "      clearTimeout(rejectTimeout);\n",
+     "    const rejectTimeout = ctx.setTimeout(deferred.reject.bind(deferred), timeoutTime);\n"
+     "    // pluma: a pong that keeps the client waiting with not a byte from the server may be a path\n"
+     "    // that froze: the paths are probed (pathSelector.ts).\n"
+     "    const suspectTimeout = this.isFileNetworker ? undefined : ctx.setTimeout(() => {\n"
+     "      if(this.lastResponseTime < startTime) {\n"
+     "        plumaPaths.suspect();\n"
+     "      }\n"
+     "    }, plumaPaths.suspectAfter());\n"
+     "\n"
+     "    const onResolved = (reason: string) => {\n"
+     "      clearTimeout(rejectTimeout);\n"
+     "      clearTimeout(suspectTimeout);\n"),
+    (NETWORKER,
+     "    const onTimeout = () => {\n"
+     "      clearTimeout(rejectTimeout);\n",
+     "    const onTimeout = () => {\n"
+     "      clearTimeout(rejectTimeout);\n"
+     "      clearTimeout(suspectTimeout);\n"),
+    (NETWORKER_FACTORY,
+     "import {getEnvironment} from '@environment/utils';\n",
+     "import {getEnvironment} from '@environment/utils';\n" + PATHS_IMPORT),
+    (NETWORKER_FACTORY,
+     "  public forceReconnectTimeout() {\n"
+     "    for(const networker of this.networkers) {\n",
+     "  public forceReconnectTimeout() {\n"
+     "    // pluma: the browser came online, or the user asked to reconnect: the paths are probed again\n"
+     "    // (pathSelector.ts).\n"
+     "    plumaPaths.networkChanged();\n"
+     "    for(const networker of this.networkers) {\n"),
+)
+
+# What the probes and the switches rely on: the WebSocket class tweb's
+# transport picks (pathSelector.ts picks it the same way), its abridged
+# transport over obfuscated2 and the classes' methods the probe calls, the
+# live change of a transport's URL, the networkers' fields the switch reads,
+# and the two callers of forceReconnectTimeout (online, the reconnect link).
+PATH_RELIES_ON = (
+    (DC_CONFIGURATOR,
+     "    if(import.meta.env.VITE_MTPROTO_SW || !import.meta.env.VITE_SAFARI_PROXY_WEBSOCKET) {\n"
+     "      oooohLetMeLive = Socket;\n"
+     "    } else {\n"
+     "      oooohLetMeLive = (getEnvironment().IS_SAFARI && IS_WEB_WORKER && typeof(SocketProxied) !== 'undefined') /* || true */ ? SocketProxied : Socket;\n"
+     "    }\n"
+     "\n"
+     "    return new TcpObfuscated(oooohLetMeLive, dcId, chosenServer, logSuffix, retryTimeout);\n"),
+    (DC_CONFIGURATOR, "  public chosenServers: Servers = {} as any;\n"),
+    ("src/lib/mtproto/transports/tcpObfuscated.ts", "  private codec = abridgedPacketCodec;\n"),
+    ("src/lib/mtproto/transports/tcpObfuscated.ts",
+     "  public changeUrl(url: string) {\n"
+     "    if(this.url === url) {\n"
+     "      return;\n"
+     "    }\n"
+     "\n"
+     "    this.url = url;\n"
+     "    this.forceReconnect();\n"
+     "  }\n"),
+    ("src/lib/mtproto/transports/obfuscation.ts", "  public async init(codec: Codec) {\n"),
+    ("src/lib/mtproto/transports/obfuscation.ts", "  public encode(payload: Uint8Array) {\n"),
+    ("src/lib/mtproto/transports/obfuscation.ts",
+     "  public decode(payload: Uint8Array) {\n    return this.process(payload, 'decrypt');\n  }\n"),
+    ("src/lib/mtproto/transports/abridged.ts", "  public encodePacket(data: Uint8Array) {\n"),
+    ("src/lib/mtproto/transports/transport.ts", "  new(dcId: number, url: string, logSuffix: string): MTConnection;\n"),
+    ("src/lib/mtproto/transports/websocket.ts", "    this.ws = new WebSocket(this.url, 'binary');\n"),
+    (NETWORKER, "  private lastResponseTime = 0;\n"),
+    (NETWORKER, "    this.lastResponseTime = Date.now();\n"),
+    (NETWORKER, "  public isFileNetworker: boolean;\n"),
+    (NETWORKER, "  public activeRequests = 0;\n"),
+    (NETWORKER, "    const startTime = this.lastPingStartTime = Date.now();\n"),
+    ("src/lib/apiManagerProxy.ts",
+     "    window.addEventListener('online', () => {\n"
+     "      rootScope.managers.networkerFactory.forceReconnectTimeout();\n"),
+    ("src/components/connectionStatus.ts", "() => this.managers.networkerFactory.forceReconnectTimeout());\n"),
+)
+
+# The callers of the selector: one each, where the edits put them.
+PATH_CALLS = {
+    "plumaPaths.url(": {DC_CONFIGURATOR: 1},
+    "plumaPaths.addSwitcher(": {API_MANAGER: 1},
+    "plumaPaths.setAppConfig(": {API_MANAGER_METHODS: 1},
+    "plumaPaths.suspect(": {NETWORKER: 1},
+    "plumaPaths.suspectAfter(": {NETWORKER: 1},
+    "plumaPaths.networkChanged(": {NETWORKER_FACTORY: 1},
+}
+# Log calls of the selector name hosts, outcomes and times, never the bytes of
+# a probe.
+_PATH_LOG_CALL = re.compile(r"\bthis\.log(?:\.error)?\(([^\n]*)\);")
+_PATH_LOG_SECRET = re.compile(r"\b(?:nonce|pad|data|packet|buffer|encoded|init|body)\b")
+
+
+def paths(tree):
+    for rel, text in PATH_RELIES_ON:
+        tree.expect(rel, text)
+    for rel in (PATH_CHOICE, PATH_SELECTOR):
+        if (tree.root / rel).exists():
+            raise PatchError(f"{rel}: upstream has a file of that name now; review it")
+    for rel, old, new in PATH_EDITS:
+        tree.replace(rel, old, new)
+    tree.write(PATH_CHOICE, PATH_CHOICE_TS)
+    tree.write(PATH_SELECTOR, PATH_SELECTOR_TS)
+
+
+def verify_paths(sources):
+    for rel, text in ((PATH_CHOICE, PATH_CHOICE_TS), (PATH_SELECTOR, PATH_SELECTOR_TS)):
+        if sources.get(rel) != text:
+            raise PatchError(f"{rel}: not the choice of paths of ci/patch.py")
+    for rel, old, new in PATH_EDITS:
+        if sources[rel].count(new) != 1 or old in sources[rel].replace(new, ""):
+            raise PatchError(f"{rel}: the edit of the paths to the server is not there")
+    code = {rel: _COMMENT.sub("", text) for rel, text in sources.items() if "plumaPaths." in text}
+    for call, where in PATH_CALLS.items():
+        for rel in sorted(set(code) | set(where)):
+            found = code.get(rel, "").count(call)
+            if found != where.get(rel, 0):
+                raise PatchError(f"{rel}: {found} calls {call}…), expected {where.get(rel, 0)}")
+    for m in _PATH_LOG_CALL.finditer(PATH_SELECTOR_TS):
+        if _PATH_LOG_SECRET.search(m.group(1)):
+            raise PatchError(f"{PATH_SELECTOR}: a log line names {_PATH_LOG_SECRET.search(m.group(1)).group()!r}")
 
 
 def main(argv=None):

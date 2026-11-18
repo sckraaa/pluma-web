@@ -747,6 +747,9 @@ DAMAGE = (
     *((rel, old, damaged(old)) for rel, old, _ in patch.CDN_HTTPS_EDITS),
     *((rel, text, damaged(text)) for rel, text in patch.CDN_HTTPS_RELIES_ON),
     ("index.html", "base-uri 'self'\">", "base-uri 'self'; connect-src 'self'\">"),
+    # The paths to the server: each edit, and what the edits rely on.
+    *((rel, old, damaged(old)) for rel, old, _ in patch.PATH_EDITS),
+    *((rel, text, damaged(text)) for rel, text in patch.PATH_RELIES_ON),
 )
 
 
@@ -835,7 +838,7 @@ class UpstreamTest(unittest.TestCase):
     def test_patch(self):
         tree, c = self.run_patch()
         dc = tree.read(DC)
-        self.assertIn("  return 'wss://pluma.chat/apiws';\n", dc)
+        self.assertIn("export const PLUMA_SERVER_PATH = 'wss://pluma.chat/apiws';\n", dc)
         self.assertNotIn("dcOptions", dc)
         self.assertIn(f"modulus: '{c.modulus}'", tree.read(RSA))
         self.assertNotIn("testPublicKeysHex", tree.read(RSA))
@@ -1053,50 +1056,54 @@ class UpstreamTest(unittest.TestCase):
 
     def test_dev_server(self):
         tree, _ = self.run_patch("ws://localhost:11443/apiws")
-        self.assertIn("  return 'ws://localhost:11443/apiws';\n", tree.read(DC))
+        self.assertIn("export const PLUMA_SERVER_PATH = 'ws://localhost:11443/apiws';\n", tree.read(DC))
 
     def test_edges(self):
-        # Without edges the function is what it was before them.
+        # Without edges, the server's URL is the only path.
         tree, _ = self.run_patch()
-        self.assertIn("  assertValidDcId(_dcId);\n  return 'wss://pluma.chat/apiws';\n}\n", tree.read(DC))
-        self.assertNotIn("location.host", tree.read(DC))
+        dc = tree.read(DC)
+        self.assertIn("export const PLUMA_SERVER_PATH = 'wss://pluma.chat/apiws';\n"
+                      "export const PLUMA_EDGE_PATHS = new Map<string, string>();\n\n"
+                      "export function constructTelegramWebSocketUrl(", dc)
+        self.assertIn("  assertValidDcId(_dcId);\n  return plumaPaths.url(PLUMA_SERVER_PATH, PLUMA_EDGE_PATHS);\n}\n", dc)
+        self.assertIn("import isValidDcId from '@lib/mtproto/isValidDcId';\n"
+                      "import plumaPaths from '@lib/mtproto/pathSelector';\n", dc)
+        self.assertNotIn("location.", dc)
         self.tearDown()
         tree, c = self.run_patch(edges=EDGES)
-        self.assertIn("  assertValidDcId(_dcId);\n"
-                      "  // pluma: a page loaded from one of the server's edges (a CDN, a node in\n", tree.read(DC))
-        self.assertIn("  switch(location.host) {\n"
-                      "    case 'a1b2.gcorecdn.com': return 'wss://a1b2.gcorecdn.com/apiws';\n"
-                      "    case 'ru.pluma.chat': return 'wss://ru.pluma.chat/apiws';\n"
-                      "  }\n"
-                      "  return 'wss://pluma.chat/apiws';\n"
-                      "}\n", tree.read(DC))
+        self.assertIn("export const PLUMA_SERVER_PATH = 'wss://pluma.chat/apiws';\n"
+                      "export const PLUMA_EDGE_PATHS = new Map<string, string>([\n"
+                      "  ['a1b2.gcorecdn.com', 'wss://a1b2.gcorecdn.com/apiws'],\n"
+                      "  ['ru.pluma.chat', 'wss://ru.pluma.chat/apiws']\n"
+                      "]);\n\n"
+                      "export function constructTelegramWebSocketUrl(", tree.read(DC))
         # A development build with an edge (a stand behind a TLS proxy).
         self.tearDown()
         tree, _ = self.run_patch("ws://localhost:11443/apiws", "wss://edge.pluma.test/apiws")
-        self.assertIn("    case 'edge.pluma.test': return 'wss://edge.pluma.test/apiws';\n"
-                      "  }\n"
-                      "  return 'ws://localhost:11443/apiws';\n", tree.read(DC))
+        self.assertIn("export const PLUMA_SERVER_PATH = 'ws://localhost:11443/apiws';\n"
+                      "export const PLUMA_EDGE_PATHS = new Map<string, string>([\n"
+                      "  ['edge.pluma.test', 'wss://edge.pluma.test/apiws']\n"
+                      "]);\n", tree.read(DC))
 
     def test_edges_are_verified(self):
         tree, c = self.run_patch(edges=EDGES)
-        gcore = "    case 'a1b2.gcorecdn.com': return 'wss://a1b2.gcorecdn.com/apiws';\n"
+        gcore = "  ['a1b2.gcorecdn.com', 'wss://a1b2.gcorecdn.com/apiws'],\n"
         for old, new, error in (
-            # An edge lost, or chosen for a host that is not its own.
+            # An edge lost, or under a host that is not its own.
             (gcore, "", "the WebSocket URLs are"),
-            (gcore, gcore.replace("case 'a1b2.gcorecdn.com'", "case 'ru.pluma.chat'"),
-             "the edge wss://a1b2.gcorecdn.com/apiws is not chosen by the page's host"),
-            # An edge the default, before the server's own URL.
-            ("  }\n  return 'wss://pluma.chat/apiws';\n}\n",
-             "    default: return 'wss://ru.pluma.chat/apiws';\n  }\n  return 'wss://pluma.chat/apiws';\n}\n",
-             "the WebSocket URLs are"),
-            ("    case 'ru.pluma.chat': return 'wss://ru.pluma.chat/apiws';\n  }\n  return 'wss://pluma.chat/apiws';\n",
-             "  }\n  return 'wss://ru.pluma.chat/apiws';\n    case 'ru.pluma.chat': return 'wss://pluma.chat/apiws';\n",
-             "the server's URL is not what the client connects to by default"),
+            (gcore, gcore.replace("['a1b2.gcorecdn.com'", "['ru.pluma.chat'"), "the paths to the server are not the build's"),
+            # An edge instead of the server's own URL.
+            ("export const PLUMA_SERVER_PATH = 'wss://pluma.chat/apiws';\n",
+             "export const PLUMA_SERVER_PATH = 'wss://ru.pluma.chat/apiws';\n", "the WebSocket URLs are"),
             # An edge not over TLS, or one more URL.
-            ("return 'wss://ru.pluma.chat/apiws'", "return 'ws://ru.pluma.chat/apiws'", "the WebSocket URLs are"),
-            (gcore, gcore + "    case 'x.example.net': return `wss://${location.host}/apiws`;\n", "the WebSocket URLs are"),
-            # The choice by the page's host gone.
-            ("  switch(location.host) {\n", "  switch(location.hostname) {\n", "the choice of an edge by the page's host"),
+            ("'wss://ru.pluma.chat/apiws']", "'ws://ru.pluma.chat/apiws']", "the WebSocket URLs are"),
+            (gcore, gcore + "  ['x.example.net', `wss://${location.host}/apiws`],\n", "the WebSocket URLs are"),
+            # Not the chosen path, or a choice by the page's address here.
+            ("  return plumaPaths.url(PLUMA_SERVER_PATH, PLUMA_EDGE_PATHS);\n",
+             "  return PLUMA_EDGE_PATHS.get(location.host) ?? PLUMA_SERVER_PATH;\n",
+             "the client does not connect by the path the worker chose"),
+            ("  assertValidDcId(_dcId);\n", "  assertValidDcId(_dcId);\n  if(location.host) {}\n",
+             "picks a URL by the page's address"),
         ):
             with self.subTest(error=error, new=new[:40]):
                 text = tree.read(DC)
@@ -1109,7 +1116,8 @@ class UpstreamTest(unittest.TestCase):
                     (self.root / DC).write_text(text, encoding="utf-8")
         patch.verify(tree, c)
         # The patched tree of a build without edges, or with other ones.
-        for edges in ("", "wss://ru.pluma.chat/apiws", "wss://ru.pluma.chat/apiws,wss://a1b2.gcorecdn.com/apiws,wss://e.example.net/apiws"):
+        for edges in ("", "wss://ru.pluma.chat/apiws", "wss://ru.pluma.chat/apiws,wss://a1b2.gcorecdn.com/apiws,wss://e.example.net/apiws",
+                      "wss://ru.pluma.chat/apiws,wss://a1b2.gcorecdn.com/apiws"):
             with self.subTest(edges=edges), self.assertRaisesRegex(patch.PatchError, "dcConfigurator.ts"):
                 patch.verify(tree, config(args={"edge_ws_urls": edges}))
 
@@ -1836,6 +1844,86 @@ class UpstreamTest(unittest.TestCase):
         with self.assertRaisesRegex(patch.PatchError, "cdnHttps.ts: upstream has a file of that name"):
             self.run_patch()
 
+    def test_paths(self):
+        tree, c = self.run_patch(edges=EDGES)
+        self.assertEqual(tree.read(patch.PATH_CHOICE), patch.PATH_CHOICE_TS)
+        self.assertEqual(tree.read(patch.PATH_SELECTOR), patch.PATH_SELECTOR_TS)
+        for rel, _, new in patch.PATH_EDITS:
+            self.assertEqual(tree.read(rel).count(new), 1, rel)
+        api = tree.read(patch.API_MANAGER)
+        # The switcher sits in after(), before upstream's own change of URLs.
+        self.assertLess(api.index("    plumaPaths.addSwitcher({\n"), api.index("    this.rootScope.addEventListener('premium_toggle'"))
+        self.assertLess(api.index("  protected after() {\n"), api.index("    plumaPaths.addSwitcher({\n"))
+        networker = tree.read(patch.NETWORKER)
+        ping = networker[networker.index("  public sendPingDelayDisconnect = () => {\n"):]
+        ping = ping[:ping.index("\n  };\n")]
+        self.assertEqual(ping.count("clearTimeout(suspectTimeout);"), 2)
+        self.assertIn("    const startTime = this.lastPingStartTime = Date.now();\n", ping)
+        # The pure rules import nothing, so Node.js runs them as they are.
+        self.assertNotRegex(patch.PATH_CHOICE_TS, r"(?m)^import ")
+        # The probe: the WebSocket class of tweb's transport, obfuscated2 over the
+        # abridged transport, resPQ before pluma.probe, and no URL of its own.
+        code = patch.PATH_SELECTOR_TS
+        for text in ("const connection: MTConnection = new (connectionClass())(1, url, '-P');",
+                     "const init = await obfuscation.init(abridgedPacketCodec);",
+                     "send(reqPqMulti(nonce));",
+                     "send(probeRequest(nonce, down, randomize(new Uint8Array(up))));",
+                     "this.current = this.page = edges.get(location.host) ?? server;"):
+            self.assertEqual(code.count(text), 1, text)
+        self.assertLess(code.index("if(!isResPQ(data, nonce)) {"), code.index("send(probeRequest("))
+        for rel in (patch.PATH_CHOICE, patch.PATH_SELECTOR):
+            self.assertNotRegex(tree.read(rel), r"wss?://")
+
+    def test_paths_are_verified(self):
+        tree, c = self.run_patch(edges=EDGES)
+        for rel, old, new, error in (
+            (patch.PATH_CHOICE, "const TIE_RATIO = 0.7;", "const TIE_RATIO = 0.5;", "pathChoice.ts: not the choice of paths"),
+            (patch.PATH_SELECTOR, "const SUSPECT_INTERVAL = 60e3;", "const SUSPECT_INTERVAL = 6e3;",
+             "pathSelector.ts: not the choice of paths"),
+            (patch.NETWORKER, "      clearTimeout(suspectTimeout);\n      const transport = this.transport as TcpObfuscated;\n",
+             "      const transport = this.transport as TcpObfuscated;\n",
+             "networker.ts: the edit of the paths to the server is not there"),
+            (patch.NETWORKER_FACTORY, "    plumaPaths.networkChanged();\n", "",
+             "networkerFactory.ts: the edit of the paths to the server is not there"),
+            (patch.API_MANAGER_METHODS, "  public getConfig(overwrite?: boolean) {\n",
+             "  public getConfig(overwrite?: boolean) {\n    plumaPaths.suspect();\n",
+             r"apiManagerMethods.ts: 1 calls plumaPaths.suspect\(…\), expected 0"),
+            ("src/lib/mtproto/authorizer.ts", "export class Authorizer {",
+             "const u = () => plumaPaths.url('', new Map());\nexport class Authorizer {",
+             r"authorizer.ts: 1 calls plumaPaths.url\(…\), expected 0"),
+        ):
+            with self.subTest(error=error):
+                text = tree.read(rel)
+                self.assertEqual(text.count(old), 1, old)
+                (self.root / rel).write_text(text.replace(old, new, 1), encoding="utf-8")
+                self.written.add(rel)
+                try:
+                    with self.assertRaisesRegex(patch.PatchError, error):
+                        patch.verify(tree, c)
+                finally:
+                    (self.root / rel).write_text(text, encoding="utf-8")
+        patch.verify(tree, c)
+
+    def test_paths_log_no_probe_bytes(self):
+        line = "            this.log(`gate ${host(url)}: ${describe(result)}`);\n"
+        self.assertEqual(patch.PATH_SELECTOR_TS.count(line), 1)
+        for bad in ("nonce", "packet", "data"):
+            with self.subTest(bad=bad):
+                self.tearDown()
+                ts = patch.PATH_SELECTOR_TS.replace(line, line.replace("${describe(result)}", "${" + bad + "}"))
+                with mock.patch.object(patch, "PATH_SELECTOR_TS", ts), \
+                        self.assertRaisesRegex(patch.PatchError, "pathSelector.ts: a log line names"):
+                    self.run_patch()
+
+    def test_paths_files_are_new(self):
+        for rel in (patch.PATH_CHOICE, patch.PATH_SELECTOR):
+            with self.subTest(rel=rel):
+                self.tearDown()
+                self.written.add(rel)
+                (self.root / rel).write_text("export default 1;\n")
+                with self.assertRaisesRegex(patch.PatchError, pathlib.PurePath(rel).name + ": upstream has a file of that name"):
+                    self.run_patch()
+
     def test_saved_tags_file_of_upstream(self):
         self.written.add(SAVED_TAGS)
         (self.root / SAVED_TAGS).write_text("export default function savedTagsAvailable() {\n  return false;\n}\n")
@@ -1847,6 +1935,51 @@ class UpstreamTest(unittest.TestCase):
         (self.root / ".env.production.local").write_text("VITE_MTPROTO_HAS_HTTP=1\n")
         with self.assertRaisesRegex(patch.PatchError, r"\.env\.production\.local"):
             self.run_patch()
+
+
+# --- the choice of paths in Node.js -----------------------------------------------
+
+
+def node_strips_types():
+    """Whether a Node.js that runs TypeScript as it is (22.6 and later with
+    --experimental-strip-types, 23.6 and later by default) is on PATH."""
+    try:
+        out = subprocess.run(["node", "--version"], capture_output=True, text=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    m = re.fullmatch(r"v(\d+)\.(\d+)\.\d+\s*", out)
+    return bool(m) and (int(m.group(1)), int(m.group(2))) >= (22, 6)
+
+
+@unittest.skipIf(not os.environ.get("CI") and not node_strips_types(),
+                 "no Node.js that strips types (22.6 or later)")
+class PathChoiceTest(unittest.TestCase):
+    """The rules of the choice of paths (pathChoice.ts) run by
+    ci/path_choice_test.mjs: CI installs the Node.js of upstream.env first,
+    and there these tests never skip."""
+
+    def test_rules(self):
+        with tempfile.TemporaryDirectory() as d:
+            ts = pathlib.Path(d) / "pathChoice.ts"
+            ts.write_text(patch.PATH_CHOICE_TS, encoding="utf-8")
+            run = subprocess.run(["node", "--experimental-strip-types", "--no-warnings",
+                                  str(ROOT / "ci/path_choice_test.mjs")],
+                                 env={**os.environ, "PATH_CHOICE": ts.as_uri()}, capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertRegex(run.stdout, r"(?m)^# pass [1-9]\d*$")
+        self.assertRegex(run.stdout, r"(?m)^# fail 0$")
+
+    def test_a_broken_rule_fails(self):
+        # The tests see the code: a rule changed makes them fail.
+        broken = patch.PATH_CHOICE_TS.replace("const TIE_RATIO = 0.7;", "const TIE_RATIO = 1;")
+        self.assertNotEqual(broken, patch.PATH_CHOICE_TS)
+        with tempfile.TemporaryDirectory() as d:
+            ts = pathlib.Path(d) / "pathChoice.ts"
+            ts.write_text(broken, encoding="utf-8")
+            run = subprocess.run(["node", "--experimental-strip-types", "--no-warnings",
+                                  str(ROOT / "ci/path_choice_test.mjs")],
+                                 env={**os.environ, "PATH_CHOICE": ts.as_uri()}, capture_output=True, text=True)
+        self.assertNotEqual(run.returncode, 0)
 
 
 # --- the bundle ---------------------------------------------------------------
