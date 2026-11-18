@@ -47,6 +47,16 @@ jobs:
           persist-credentials: false
       - name: Fetch upstream
         run: ci/fetch-upstream.sh
+      # The tests run the rules of the paths to the server in Node.js.
+      - name: Toolchain of upstream.env
+        id: toolchain
+        run: |
+          . ./upstream.env
+          echo "node=$NODE_VERSION" >>"$GITHUB_OUTPUT"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ steps.toolchain.outputs.node }}
+          package-manager-cache: false
       - name: Patch script tests
         run: python3 -I ci/patch_test.py -v
       - name: Shell scripts
