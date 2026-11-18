@@ -1951,6 +1951,16 @@ def node_strips_types():
     return bool(m) and (int(m.group(1)), int(m.group(2))) >= (22, 6)
 
 
+def run_path_choice_tests(ts):
+    """Runs ci/path_choice_test.mjs against the pathChoice.ts at ts. The
+    reporter is named: Node.js picks TAP or spec by itself depending on the
+    version and on whether stdout is a terminal, and only TAP has the totals
+    the tests read."""
+    return subprocess.run(["node", "--experimental-strip-types", "--no-warnings", "--test-reporter=tap",
+                           str(ROOT / "ci/path_choice_test.mjs")],
+                          env={**os.environ, "PATH_CHOICE": ts.as_uri()}, capture_output=True, text=True)
+
+
 @unittest.skipIf(not os.environ.get("CI") and not node_strips_types(),
                  "no Node.js that strips types (22.6 or later)")
 class PathChoiceTest(unittest.TestCase):
@@ -1962,9 +1972,7 @@ class PathChoiceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ts = pathlib.Path(d) / "pathChoice.ts"
             ts.write_text(patch.PATH_CHOICE_TS, encoding="utf-8")
-            run = subprocess.run(["node", "--experimental-strip-types", "--no-warnings",
-                                  str(ROOT / "ci/path_choice_test.mjs")],
-                                 env={**os.environ, "PATH_CHOICE": ts.as_uri()}, capture_output=True, text=True)
+            run = run_path_choice_tests(ts)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         self.assertRegex(run.stdout, r"(?m)^# pass [1-9]\d*$")
         self.assertRegex(run.stdout, r"(?m)^# fail 0$")
@@ -1976,9 +1984,7 @@ class PathChoiceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             ts = pathlib.Path(d) / "pathChoice.ts"
             ts.write_text(broken, encoding="utf-8")
-            run = subprocess.run(["node", "--experimental-strip-types", "--no-warnings",
-                                  str(ROOT / "ci/path_choice_test.mjs")],
-                                 env={**os.environ, "PATH_CHOICE": ts.as_uri()}, capture_output=True, text=True)
+            run = run_path_choice_tests(ts)
         self.assertNotEqual(run.returncode, 0)
 
 
