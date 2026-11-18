@@ -82,6 +82,7 @@ jobs:
         env:
           SERVER_URL: ${{ vars.PLUMA_SERVER_URL }}
           RSA_PUBLIC_KEY: ${{ vars.PLUMA_RSA_PUBLIC_KEY }}
+          EDGE_WS_URLS: ${{ vars.PLUMA_EDGE_WS_URLS }}
         run: ci/configure.sh
       - name: Restore the pnpm store
         id: pnpm-store

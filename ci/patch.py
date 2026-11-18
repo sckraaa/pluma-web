@@ -194,6 +194,52 @@ def parse_server_url(url):
     return f"{scheme}://{host}{':' + port if port else ''}{path}"
 
 
+# --- edges ---------------------------------------------------------------------
+
+# The most edges a build carries.
+EDGE_LIMIT = 4
+# Telegram's own domains: no edge of the Pluma server is on one.
+_TELEGRAM_DOMAINS = ("telegram.org", "telegram.me", "telegram.dog", "t.me", "telegra.ph", "telesco.pe", "tg.dev")
+
+
+def parse_edge_ws_urls(value, server_url):
+    """The WebSocket URLs of the server's edges (ADR 0072 of the server
+    repository): a CDN or another host that carries the gateway's MTProto
+    over WebSocket and serves this site too. A comma-separated list of 0 to
+    EDGE_LIMIT, each wss://<host name>/apiws on port 443, as the edges'
+    contract fixes it; empty means no edge. Returns the URLs in order."""
+    if not value.strip():
+        return []
+    server_host = re.match(r"wss?://([^/]+)", server_url).group(1)
+    urls = []
+    for item in value.split(","):
+        url = item.strip()
+        m = re.fullmatch(r"wss://([A-Za-z0-9.-]+)/apiws", url)
+        if not m:
+            raise PatchError(f"edge URL {url!r}: expected wss://<host name>/apiws, e.g. wss://ru.pluma.chat/apiws")
+        host = m.group(1).lower()
+        if re.fullmatch(r"[\d.]+", host) or "." not in host:
+            raise PatchError(f"edge URL {url!r}: the host must be a domain name, which the edge's certificate names")
+        if len(host) > 253 or not all(_HOST_LABEL.fullmatch(l) for l in host.split(".")):
+            raise PatchError(f"edge URL {url!r}: {host} is not a host name")
+        if any(host == d or host.endswith("." + d) for d in _TELEGRAM_DOMAINS) or telegram_traces(host):
+            raise PatchError(f"edge URL {url!r}: {host} is Telegram's")
+        if host == server_host:
+            raise PatchError(f"edge URL {url!r}: {host} is the server's own host, not an edge")
+        url = f"wss://{host}/apiws"
+        if url in urls:
+            raise PatchError(f"edge URL {url!r}: listed twice")
+        urls.append(url)
+    if len(urls) > EDGE_LIMIT:
+        raise PatchError(f"edge URLs: {len(urls)}, at most {EDGE_LIMIT}")
+    return urls
+
+
+def edge_host(url):
+    """The host of an edge URL parse_edge_ws_urls returned."""
+    return url[len("wss://"):-len("/apiws")]
+
+
 # --- Node.js engines -----------------------------------------------------------
 
 
@@ -362,7 +408,7 @@ def load_env(path):
 
 
 class Config:
-    def __init__(self, upstream, app, server_url, rsa_pem, target, build_id):
+    def __init__(self, upstream, app, server_url, rsa_pem, target, build_id, edge_ws_urls=""):
         def need(env, key):
             if not env.get(key):
                 raise PatchError(f"{key} is not set")
@@ -400,6 +446,7 @@ class Config:
         self.required_epoch = int(epoch)
 
         self.server_url = parse_server_url(server_url)
+        self.edge_ws_urls = parse_edge_ws_urls(edge_ws_urls, self.server_url)
 
         n, e = parse_pkcs1_public_key(rsa_pem)
         if len(n) * 8 != 2048:
@@ -420,6 +467,7 @@ class Config:
             "api_hash": self.api_hash,
             "layer": self.layer,
             "server_url": self.server_url,
+            "edge_ws_urls": self.edge_ws_urls,
             "modulus": self.modulus,
             "exponent": self.exponent,
             "fingerprint": f"{self.fingerprint:#018x}",
@@ -1686,6 +1734,46 @@ def link_host(tree):
                  "        url: exportedInvite.link.replace(/^https?:\\/\\//, '')\n")
 
 
+def server_ws_url_body(c):
+    """The body of constructTelegramWebSocketUrl: the server's URL, or the
+    URL of the edge the page was loaded from (W-086 of the server
+    repository's clients/patches/web.md). Without edges, the server's URL
+    only, as before edges were there."""
+    body = ("  if(!import.meta.env.VITE_MTPROTO_HAS_WS) {\n"
+            "    return;\n"
+            "  }\n"
+            "\n"
+            "  // pluma: every datacenter, connection type and mode (test, premium) is\n"
+            "  // the one Pluma server.\n"
+            "  assertValidDcId(_dcId);\n")
+    if c.edge_ws_urls:
+        body += ("  // pluma: a page loaded from one of the server's edges (a CDN, a node in\n"
+                 "  // another country: ADR 0072 of the server repository) reaches the server\n"
+                 "  // through that edge, the way it reached the page; from any other host,\n"
+                 "  // directly. In a worker location is the worker's, of the page's origin\n"
+                 "  // (config/app.ts reads it there too).\n"
+                 "  switch(location.host) {\n"
+                 + "".join(f"    case '{edge_host(url)}': return '{url}';\n" for url in c.edge_ws_urls) +
+                 "  }\n")
+    return body + f"  return '{c.server_url}';"
+
+
+def verify_server_ws_url(dc, c):
+    """The server's URL is what the client connects to, unless the page's
+    host is one of the build's edges, whose URL it is then."""
+    urls = re.findall(r"['`](wss?://[^'`]*)['`]", dc)
+    if sorted(urls) != sorted([c.server_url] + c.edge_ws_urls) or len(re.findall(r"['`]wss?://", dc)) != len(urls):
+        raise PatchError(f"dcConfigurator.ts: the WebSocket URLs are {urls}, "
+                         f"expected the server's and the edges' {[c.server_url] + c.edge_ws_urls}")
+    if dc.count(f"\n  return '{c.server_url}';\n}}\n") != 1:
+        raise PatchError("dcConfigurator.ts: the server's URL is not what the client connects to by default")
+    if dc.count("  switch(location.host) {\n") != bool(c.edge_ws_urls):
+        raise PatchError("dcConfigurator.ts: the choice of an edge by the page's host is not there as the build's edges need")
+    for url in c.edge_ws_urls:
+        if dc.count(f"\n    case '{edge_host(url)}': return '{url}';\n") != 1:
+            raise PatchError(f"dcConfigurator.ts: the edge {url} is not chosen by the page's host {edge_host(url)}")
+
+
 def patch(tree, c):
     # The upstream is the one upstream.env describes: the schema layer the
     # server speaks (ADR 0045), the version, and the toolchain the CI installs.
@@ -1723,14 +1811,7 @@ def patch(tree, c):
     tree.replace_body(dc,
                       "export function constructTelegramWebSocketUrl(_dcId: DcId, connectionType: ConnectionType, premium?: boolean) {\n",
                       "\n}\n",
-                      "  if(!import.meta.env.VITE_MTPROTO_HAS_WS) {\n"
-                      "    return;\n"
-                      "  }\n"
-                      "\n"
-                      "  // pluma: every datacenter, connection type and mode (test, premium) is\n"
-                      "  // the one Pluma server.\n"
-                      "  assertValidDcId(_dcId);\n"
-                      f"  return '{c.server_url}';",
+                      server_ws_url_body(c),
                       must_contain=(".web.telegram.org/${path}",))
     tree.replace(dc,
                  "// A dcId can arrive from the service worker's `stream/` route, i.e. from a URL any page\n"
@@ -1894,8 +1975,7 @@ def verify(tree, c):
             raise PatchError(f"{rel}: the client still takes {m.group(1)} from the build variables")
 
     dc = sources["src/lib/mtproto/dcConfigurator.ts"]
-    if dc.count(f"'{c.server_url}'") != 1 or len(re.findall(r"['`]wss?://", dc)) != 1:
-        raise PatchError("dcConfigurator.ts: the server URL is not the only one")
+    verify_server_ws_url(dc, c)
     rsa = sources["src/lib/mtproto/rsaKeysManager.ts"]
     if rsa.count("modulus: '") != 1 or f"modulus: '{c.modulus}'" not in rsa:
         raise PatchError("rsaKeysManager.ts: the server key is not the only one")
@@ -5359,10 +5439,12 @@ def main(argv=None):
     ap.add_argument("--rsa-public-key", required=True, help="PKCS#1 PEM of the server key")
     ap.add_argument("--target", required=True, help="server or dev (recorded for ci/build.sh)")
     ap.add_argument("--build-id", required=True, help="the commit of this repository the build is made from")
+    ap.add_argument("--edge-ws-urls", default="",
+                    help="the WebSocket URLs of the server's edges, comma-separated, wss://<host>/apiws (none by default)")
     a = ap.parse_args(argv)
     try:
         c = Config(load_env(a.upstream), load_env(a.app), a.server_url,
-                   pathlib.Path(a.rsa_public_key).read_text(), a.target, a.build_id)
+                   pathlib.Path(a.rsa_public_key).read_text(), a.target, a.build_id, a.edge_ws_urls)
         tree = Tree(a.source)
         patch(tree, c)
         verify(tree, c)
@@ -5371,7 +5453,7 @@ def main(argv=None):
         print(f"patch: {e}", file=sys.stderr)
         return 1
     print(f"patch: \"{c.app_name}\", api_id {c.api_id}, layer {c.layer}, server {c.server_url}, "
-          f"server key {c.fingerprint:#018x} ({c.fingerprint})")
+          f"edges {', '.join(c.edge_ws_urls) or 'none'}, server key {c.fingerprint:#018x} ({c.fingerprint})")
     return 0
 
 

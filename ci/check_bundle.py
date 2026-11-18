@@ -58,12 +58,13 @@ def check(site, record, target):
         if p.suffix == ".js":
             scripts.append(text)
 
-    # The code connects to the server, and to nothing else over WebSocket;
-    # tweb's HTTP transport is off.
+    # The code connects to the server or the server's edges, and to nothing
+    # else over WebSocket; tweb's HTTP transport is off.
     code = "\n".join(scripts)
     urls = set(re.findall(r"wss?://[^\s'\"`\\]*", code))
-    if urls != {record["server_url"]}:
-        raise PatchError(f"the code's WebSocket URLs are {sorted(urls)}, expected {record['server_url']}")
+    expected = {record["server_url"], *record["edge_ws_urls"]}
+    if urls != expected:
+        raise PatchError(f"the code's WebSocket URLs are {sorted(urls)}, expected {sorted(expected)}")
     for switch in HTTP_TRANSPORT_SWITCHES:
         m = switch.search(code)
         if m:

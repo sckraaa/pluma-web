@@ -70,6 +70,11 @@ DEV_KEY = (ROOT / "config/dev/server_public.pem").read_text()
 # The commit of this repository a build is made from (ci/configure.sh).
 BUILD_ID = "4f1c0d3b9a8e7f6a5b4c3d2e1f0a9b8c7d6e5f40"
 
+# The server's edges as the repository variable names them, and as the patch
+# takes them.
+EDGES = "wss://a1b2.gcorecdn.com/apiws, wss://ru.pluma.chat/apiws"
+EDGE_URLS = ["wss://a1b2.gcorecdn.com/apiws", "wss://ru.pluma.chat/apiws"]
+
 
 def fingerprint(pem):
     return patch.key_fingerprint(*patch.parse_pkcs1_public_key(pem))
@@ -138,6 +143,59 @@ class ServerUrlTest(unittest.TestCase):
                 patch.parse_server_url(url)
 
 
+class EdgeUrlsTest(unittest.TestCase):
+    def test_valid(self):
+        server = "wss://web.pluma.chat/apiws"
+        for value, want in (
+            ("", []),
+            ("  ", []),
+            ("wss://a1b2.gcorecdn.com/apiws", ["wss://a1b2.gcorecdn.com/apiws"]),
+            ("wss://a1b2.gcorecdn.com/apiws, wss://RU.Pluma.Chat/apiws",
+             ["wss://a1b2.gcorecdn.com/apiws", "wss://ru.pluma.chat/apiws"]),
+            ("wss://ru.pluma.chat/apiws,wss://a1b2.gcorecdn.com/apiws",
+             ["wss://ru.pluma.chat/apiws", "wss://a1b2.gcorecdn.com/apiws"]),
+            (",".join(f"wss://e{i}.example.net/apiws" for i in range(4)),
+             [f"wss://e{i}.example.net/apiws" for i in range(4)]),
+        ):
+            with self.subTest(value=value):
+                self.assertEqual(patch.parse_edge_ws_urls(value, server), want)
+        # The server on another port: the same name on 443 is a host of its own.
+        self.assertEqual(patch.parse_edge_ws_urls("wss://web.pluma.chat/apiws", "wss://web.pluma.chat:8443/apiws"),
+                         ["wss://web.pluma.chat/apiws"])
+        self.assertEqual(patch.edge_host("wss://ru.pluma.chat/apiws"), "ru.pluma.chat")
+
+    def test_rejects(self):
+        server = "wss://web.pluma.chat/apiws"
+        for value in (
+            "ws://ru.pluma.chat/apiws",
+            "https://ru.pluma.chat/apiws",
+            "wss://ru.pluma.chat",
+            "wss://ru.pluma.chat/",
+            "wss://ru.pluma.chat/ws",
+            "wss://ru.pluma.chat:443/apiws",
+            "wss://ru.pluma.chat:8443/apiws",
+            "wss://ru.pluma.chat/apiws?x=1",
+            "wss://user@ru.pluma.chat/apiws",
+            "wss://194.87.226.185/apiws",
+            "wss://[2001:db8::1]/apiws",
+            "wss://localhost/apiws",
+            "wss://-ru.pluma.chat/apiws",
+            "wss://ru..pluma.chat/apiws",
+            "wss://kws1.web.telegram.org/apiws",
+            "wss://telegram.org/apiws",
+            "wss://pluma.t.me/apiws",
+            "wss://web.pluma.chat/apiws",
+            "wss://ru.pluma.chat/apiws,wss://ru.pluma.chat/apiws",
+            "wss://ru.pluma.chat/apiws,wss://RU.pluma.chat/apiws",
+            "wss://ru.pluma.chat/apiws,",
+            ",wss://ru.pluma.chat/apiws",
+            "wss://ru.pluma.chat/apiws;wss://a1b2.gcorecdn.com/apiws",
+            ",".join(f"wss://e{i}.example.net/apiws" for i in range(5)),
+        ):
+            with self.subTest(value=value), self.assertRaises(patch.PatchError):
+                patch.parse_edge_ws_urls(value, server)
+
+
 class NodeEnginesTest(unittest.TestCase):
     def test_upstream_range(self):
         spec = "^22.18.0 || >=24.11.0"
@@ -162,7 +220,7 @@ class NodeEnginesTest(unittest.TestCase):
 def config(**over):
     upstream = patch.load_env(ROOT / "upstream.env")
     app = patch.load_env(ROOT / "config/app.env")
-    args = dict(server_url="wss://pluma.chat/apiws", rsa_pem=DEV_KEY, target="server", build_id=BUILD_ID)
+    args = dict(server_url="wss://pluma.chat/apiws", rsa_pem=DEV_KEY, target="server", build_id=BUILD_ID, edge_ws_urls="")
     args.update(over.pop("args", {}))
     upstream.update(over.pop("upstream", {}))
     app.update(over.pop("app", {}))
@@ -181,6 +239,12 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(config(args={"build_id": "a" * 64}).build_id, "a" * 64)
         dev = patch.load_env(ROOT / "config/dev/server.env")
         self.assertEqual(patch.parse_server_url(dev["PLUMA_SERVER_URL"]), "ws://localhost:11443/apiws")
+        self.assertEqual(dev["PLUMA_EDGE_WS_URLS"], "")
+        self.assertEqual(c.edge_ws_urls, [])
+        self.assertEqual(c.record()["edge_ws_urls"], [])
+        edged = config(args={"edge_ws_urls": EDGES})
+        self.assertEqual(edged.edge_ws_urls, EDGE_URLS)
+        self.assertEqual(edged.record()["edge_ws_urls"], EDGE_URLS)
 
     def test_rejects(self):
         for over in (
@@ -199,6 +263,8 @@ class ConfigTest(unittest.TestCase):
             {"args": {"build_id": BUILD_ID[:12]}},
             {"args": {"build_id": BUILD_ID.upper()}},
             {"args": {"build_id": BUILD_ID + "\n"}},
+            {"args": {"edge_ws_urls": "wss://pluma.chat/apiws"}},
+            {"args": {"edge_ws_urls": "ws://ru.pluma.chat/apiws"}},
             {"app": {"PLUMA_REQUIRED_EPOCH": ""}},
             {"app": {"PLUMA_REQUIRED_EPOCH": "-1"}},
             {"app": {"PLUMA_REQUIRED_EPOCH": "01"}},
@@ -759,8 +825,8 @@ class UpstreamTest(unittest.TestCase):
                 (self.root / rel).unlink(missing_ok=True)
         self.written.clear()
 
-    def run_patch(self, url="wss://pluma.chat/apiws"):
-        c = config(args={"server_url": url})
+    def run_patch(self, url="wss://pluma.chat/apiws", edges=""):
+        c = config(args={"server_url": url, "edge_ws_urls": edges})
         tree = RecordingTree(self.root, self.written)
         patch.patch(tree, c)
         patch.verify(tree, c)
@@ -988,6 +1054,77 @@ class UpstreamTest(unittest.TestCase):
     def test_dev_server(self):
         tree, _ = self.run_patch("ws://localhost:11443/apiws")
         self.assertIn("  return 'ws://localhost:11443/apiws';\n", tree.read(DC))
+
+    def test_edges(self):
+        # Without edges the function is what it was before them.
+        tree, _ = self.run_patch()
+        self.assertIn("  assertValidDcId(_dcId);\n  return 'wss://pluma.chat/apiws';\n}\n", tree.read(DC))
+        self.assertNotIn("location.host", tree.read(DC))
+        self.tearDown()
+        tree, c = self.run_patch(edges=EDGES)
+        self.assertIn("  assertValidDcId(_dcId);\n"
+                      "  // pluma: a page loaded from one of the server's edges (a CDN, a node in\n", tree.read(DC))
+        self.assertIn("  switch(location.host) {\n"
+                      "    case 'a1b2.gcorecdn.com': return 'wss://a1b2.gcorecdn.com/apiws';\n"
+                      "    case 'ru.pluma.chat': return 'wss://ru.pluma.chat/apiws';\n"
+                      "  }\n"
+                      "  return 'wss://pluma.chat/apiws';\n"
+                      "}\n", tree.read(DC))
+        # A development build with an edge (a stand behind a TLS proxy).
+        self.tearDown()
+        tree, _ = self.run_patch("ws://localhost:11443/apiws", "wss://edge.pluma.test/apiws")
+        self.assertIn("    case 'edge.pluma.test': return 'wss://edge.pluma.test/apiws';\n"
+                      "  }\n"
+                      "  return 'ws://localhost:11443/apiws';\n", tree.read(DC))
+
+    def test_edges_are_verified(self):
+        tree, c = self.run_patch(edges=EDGES)
+        gcore = "    case 'a1b2.gcorecdn.com': return 'wss://a1b2.gcorecdn.com/apiws';\n"
+        for old, new, error in (
+            # An edge lost, or chosen for a host that is not its own.
+            (gcore, "", "the WebSocket URLs are"),
+            (gcore, gcore.replace("case 'a1b2.gcorecdn.com'", "case 'ru.pluma.chat'"),
+             "the edge wss://a1b2.gcorecdn.com/apiws is not chosen by the page's host"),
+            # An edge the default, before the server's own URL.
+            ("  }\n  return 'wss://pluma.chat/apiws';\n}\n",
+             "    default: return 'wss://ru.pluma.chat/apiws';\n  }\n  return 'wss://pluma.chat/apiws';\n}\n",
+             "the WebSocket URLs are"),
+            ("    case 'ru.pluma.chat': return 'wss://ru.pluma.chat/apiws';\n  }\n  return 'wss://pluma.chat/apiws';\n",
+             "  }\n  return 'wss://ru.pluma.chat/apiws';\n    case 'ru.pluma.chat': return 'wss://pluma.chat/apiws';\n",
+             "the server's URL is not what the client connects to by default"),
+            # An edge not over TLS, or one more URL.
+            ("return 'wss://ru.pluma.chat/apiws'", "return 'ws://ru.pluma.chat/apiws'", "the WebSocket URLs are"),
+            (gcore, gcore + "    case 'x.example.net': return `wss://${location.host}/apiws`;\n", "the WebSocket URLs are"),
+            # The choice by the page's host gone.
+            ("  switch(location.host) {\n", "  switch(location.hostname) {\n", "the choice of an edge by the page's host"),
+        ):
+            with self.subTest(error=error, new=new[:40]):
+                text = tree.read(DC)
+                self.assertEqual(text.count(old), 1)
+                (self.root / DC).write_text(text.replace(old, new, 1), encoding="utf-8")
+                try:
+                    with self.assertRaisesRegex(patch.PatchError, "dcConfigurator.ts: " + re.escape(error)):
+                        patch.verify(tree, c)
+                finally:
+                    (self.root / DC).write_text(text, encoding="utf-8")
+        patch.verify(tree, c)
+        # The patched tree of a build without edges, or with other ones.
+        for edges in ("", "wss://ru.pluma.chat/apiws", "wss://ru.pluma.chat/apiws,wss://a1b2.gcorecdn.com/apiws,wss://e.example.net/apiws"):
+            with self.subTest(edges=edges), self.assertRaisesRegex(patch.PatchError, "dcConfigurator.ts"):
+                patch.verify(tree, config(args={"edge_ws_urls": edges}))
+
+    def test_edges_damage(self):
+        # Damage to the places the edges' edit relies on stops a build with edges too.
+        for rel, old, new in DAMAGE:
+            if rel != DC:
+                continue
+            with self.subTest(old=old[:60]):
+                self.tearDown()
+                text = self.files[rel].decode("utf-8")
+                self.written.add(rel)
+                (self.root / rel).write_text(text.replace(old, new), encoding="utf-8")
+                with self.assertRaisesRegex(patch.PatchError, "dcConfigurator.ts"):
+                    self.run_patch(edges=EDGES)
 
     def test_damage(self):
         for rel, old, new in DAMAGE:
@@ -1756,6 +1893,24 @@ class BundleTest(unittest.TestCase):
 
     def test_good(self):
         self.assertEqual(self.check(), 8 + len(patch.ICONS))
+
+    def test_edges(self):
+        self.record = config(args={"edge_ws_urls": EDGES}).record()
+        code = (self.site / "index.worker-abc.js").read_text()
+        url = self.record["server_url"]
+        with self.assertRaisesRegex(patch.PatchError, "WebSocket URLs"):
+            self.check()
+        self.write("index.worker-abc.js", code.replace(
+            f"return Le(e),`{url}`",
+            'switch(Le(e),location.host){case"a1b2.gcorecdn.com":return"wss://a1b2.gcorecdn.com/apiws";'
+            f'case"ru.pluma.chat":return"wss://ru.pluma.chat/apiws"}}return`{url}`'))
+        self.assertEqual(self.check(), 8 + len(patch.ICONS))
+        # An edge of another build, or a WebSocket URL made from the page's host.
+        for extra in ("wss://e.example.net/apiws", "wss://${location.host}/apiws"):
+            with self.subTest(extra=extra):
+                self.write("x.js", f"var u=`{extra}`;")
+                with self.assertRaisesRegex(patch.PatchError, "WebSocket URLs"):
+                    self.check()
 
     def test_rejects(self):
         url = self.record["server_url"]
