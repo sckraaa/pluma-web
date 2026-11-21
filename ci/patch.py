@@ -1974,6 +1974,9 @@ def patch(tree, c):
     # A release of the site reaches open tabs.
     update_prompts(tree, c)
 
+    # What was left of Telegram's palette.
+    palette(tree)
+
 
 def verify(tree, c):
     """Checks the result independently of how the edits were made."""
@@ -2117,6 +2120,7 @@ def verify(tree, c):
     verify_help_section(sources)
     verify_login_code_screens(sources)
     verify_update_prompts(tree, c, sources)
+    verify_palette(sources)
 
 
 
@@ -3773,6 +3777,9 @@ CALL_PLATE = "src/scss/partials/_chatPinned.scss"
 CALL_WEAVE = "src/components/topbarWeave.ts"
 CALL_SANDBOX = "src/components/popupSandbox/stories/calls.ts"
 _SAGE = "(task 017 of the server)"
+# The dark theme's colours, which the call's screens take (call/index.tsx and groupCall/index.tsx give them the
+# class night).
+_NIGHT = {key: new for key, _, new in THEME_COLORS["night"]}
 # The group call's state texts (--gc-green/blue/red-text-color) are also read outside calls: by polls, a right
 # and a wrong answer (chat/bubbleParts/pollMessageContent/styles.module.scss 280-349), and by the markup's diff
 # (scss/partials/_markup.scss 110, 115). The root keeps Telegram's (base.scss 300-302); the sage ones are
@@ -3837,7 +3844,8 @@ CALL_COLOR_EDITS = (
      "  --gc-red-color: #7A4E3B;\n"
      "\n"
      "  --gc-primary-text-color: #fff;\n"
-     "  --gc-secondary-text-color: #aaaaaa;\n"
+     "  // pluma: the dark theme's secondary text (THEME_COLORS)\n"
+     f"  --gc-secondary-text-color: {_NIGHT['secondary-text-color'].upper()};\n"
      "  // pluma: polls and the markup's diff read these too, so they keep Telegram's; the call's screens take\n"
      "  // the sage ones below instead (CALL_TEXT_SCOPES)\n"
      + CALL_TEXT_OUTSIDE +
@@ -3847,6 +3855,21 @@ CALL_COLOR_EDITS = (
      "  --gc-call-blue-text-color: #7FA082;\n"
      "  --gc-call-red-text-color: #B97A55;\n"),
     *CALL_TEXT_SCOPES,
+    # The group call's panel and its tiles are Telegram's dark greys: the panel the night theme's background, which
+    # the participants' section, the theme's surface, stands out of (base.scss 282-285). Pluma's dark theme has its
+    # own (THEME_COLORS): its surface is darker than Telegram's background, so on Telegram's panel the section sank
+    # into it. A tile without video (_groupCall.scss 261) takes the dark theme's message background.
+    ("src/scss/base.scss",
+     "  // a popup's background (--background-color at night): the participants' section stands out of it\n"
+     "  // as a popup's sections do\n"
+     "  --gc-background-color: #181818;\n",
+     "  // a popup's background (--background-color at night): the participants' section stands out of it\n"
+     "  // as a popup's sections do (pluma: the dark theme's, THEME_COLORS)\n"
+     f"  --gc-background-color: {_NIGHT['background-color'].upper()};\n"),
+    ("src/scss/base.scss",
+     "  --gc-tile-background: #2c2c2e;\n",
+     "  // pluma: the dark theme's message background (THEME_COLORS)\n"
+     f"  --gc-tile-background: {_NIGHT['message-background-color'].upper()};\n"),
     # The participants' and the microphone's lottie colours read the root's custom properties
     # (helpers/dom/customProperties.ts reads getComputedStyle(document.documentElement)), not the call's screen.
     (GROUP_CALL_POPUP,
@@ -3951,14 +3974,15 @@ CALL_COLOR_EDITS = (
 
 # Telegram's colours of calls, as the places above had them. Most are found nowhere else in the client and must
 # be gone from every source; a few are also colours of something else (the accent, the danger and green of a
-# theme, Premium's gradient, a sticker's outline) and must be gone from the call's own files, from the --gc-*
-# colours and from the call's plate.
+# theme, Premium's gradient, a sticker's outline, the greys of Telegram's dark theme) and must be gone from the
+# call's own files, from the --gc-* colours and from the call's plate.
 TELEGRAM_CALL_COLORS = (
     "568fd6", "626ed5", "a667d5", "7664da", "acbd65", "459f8d", "53a4d1", "3e917a", "c0508d", "f09536", "ce5081",
     "fc7c4c", "195530", "3c87f7", "643333", "00a3b4", "00cb47", "4eabf8", "3478f6", "df44b8", "3851eb", "0976e3",
     "2bceff", "52ce5d", "00b1c0", "f05459", "766ee9", "57a4fe", "8599aa", "54b655", "4d9f4c",
 )
-TELEGRAM_CALL_COLORS_SHARED = ("5cc85e", "3390ec", "ff595a", "4588e3", "976fff", "e46ace")
+TELEGRAM_CALL_COLORS_SHARED = ("5cc85e", "3390ec", "ff595a", "4588e3", "976fff", "e46ace", "181818", "aaaaaa",
+                               "2c2c2e")
 TELEGRAM_CALL_TINTS = ("100, 50, 50", "27, 66, 42", "38, 53, 76", "71, 40, 63")
 # The buttons that keep Telegram's colours, each exactly as the edits above leave it and only there: Leave of a
 # group call (groupCall/index.tsx 664-668 makes it .group-call-button-red, _groupCall.scss 139-141 paints it
@@ -6990,6 +7014,78 @@ def verify_paths(sources):
     for m in _PATH_LOG_CALL.finditer(PATH_SELECTOR_TS):
         if _PATH_LOG_SECRET.search(m.group(1)):
             raise PatchError(f"{PATH_SELECTOR}: a log line names {_PATH_LOG_SECRET.search(m.group(1)).group()!r}")
+
+
+# --- what was left of Telegram's palette (task 118 of the server) -----------------
+#
+# Places outside calls that still drew Telegram's blues and greys: the audit
+# of task 118 of the server (2026-11-21). The rest of the client takes its
+# colours from the theme (THEME_COLORS).
+
+# The dark theme's accent: links on a toast and on a caption of the media
+# viewer, which are always dark, and the paid messages' Undo on a toast.
+_NIGHT_ACCENT = _NIGHT["primary-color"].upper()
+_ACCENT_RGB = ", ".join(str(int(_NIGHT_ACCENT[i:i + 2], 16)) for i in (1, 3, 5))
+_STORY_GRADIENT = "linear-gradient(225deg, var(--avatar-color-story-unread-from), var(--avatar-color-story-unread-to))"
+_BLUE = {key: new for key, _, new in IDENTITY_COLORS["blue"]}
+
+# (file, upstream's, Pluma's)
+PALETTE_EDITS = (
+    # A link on a toast (base.scss .toast a): Telegram's light blue.
+    ("src/scss/base.scss",
+     "  a {\n    color: #60a5e9!important;\n    cursor: pointer;\n  }\n",
+     f"  a {{\n    color: {_NIGHT_ACCENT}!important; // pluma: the dark theme's accent, as a toast is dark\n"
+     "    cursor: pointer;\n  }\n"),
+    # A link in a caption of the media viewer.
+    ("src/components/mediaViewer/mediaViewer.scss",
+     "    --link-color: #60a5e9 !important;\n",
+     f"    --link-color: {_NIGHT_ACCENT} !important; // pluma: the dark theme's accent, as the viewer is dark\n"),
+    # The icon of the stories' feature popups (stealth mode, quality): the
+    # story ring's gradient, which rebrand makes sage.
+    ("src/components/featureDetailsIconSticker.module.scss",
+     "    background: linear-gradient(225deg, #34C76F, #3DA1FD);\n",
+     f"    background: {_STORY_GRADIENT}; // pluma: the story ring's\n"),
+    # Who sees a story: Everyone is blue, the blue identity's gradient, sage
+    # (IDENTITY_COLORS); the other audiences keep their colours, as the other
+    # identities do.
+    ("src/scss/base.scss",
+     "  &-public {\n    --gradient-colors: #50ABFF, #007AFF;\n  }\n",
+     f"  &-public {{\n    --gradient-colors: {_BLUE['avatar top']}, {_BLUE['avatar bottom']}; // pluma: the blue identity's\n"
+     "  }\n"),
+    # Undo of a paid reaction and of a paid message whose price changed.
+    ("src/scss/partials/_reactions.scss",
+     "    color: #8EDEFF;\n",
+     f"    color: {_NIGHT_ACCENT}; // pluma: the dark theme's accent, on a dark toast\n"),
+    ("src/components/chat/priceChangedInterceptor/priceChangedTooltip.module.scss",
+     "  color: rgb(142, 222, 255);\n\n  @include hover-global(rgba(142, 222, 255, 0.075), background-color, false);\n",
+     f"  // pluma: the dark theme's accent, on a dark toast\n  color: rgb({_ACCENT_RGB});\n\n"
+     f"  @include hover-global(rgba({_ACCENT_RGB}, 0.075), background-color, false);\n"),
+    # The border of a search field of the light theme: the theme's border.
+    ("src/scss/base.scss",
+     "  --input-search-border-color: #dfe1e5;\n",
+     "  --input-search-border-color: " + dict((k, new) for k, _, new in THEME_COLORS["day"])["border-color"]
+     + "; // pluma: the theme's border\n"),
+)
+# Telegram's colours the edits above take away, gone from every source: a
+# CSS colour, a number or an rgb() triple.
+TELEGRAM_PALETTE_LEFT = ("60a5e9", "8edeff", "50abff", "34c76f", "3da1fd")
+_TELEGRAM_PALETTE_LEFT = re.compile(r"(?<![0-9A-Fa-f])(?:" + "|".join(TELEGRAM_PALETTE_LEFT) + r")(?![0-9A-Fa-f])"
+                                    r"|rgba?\(142, 222, 255\b", re.IGNORECASE)
+
+
+def palette(tree):
+    for rel, old, new in PALETTE_EDITS:
+        tree.replace(rel, old, new)
+
+
+def verify_palette(sources):
+    for rel, old, new in PALETTE_EDITS:
+        if sources[rel].count(new) != 1 or old in sources[rel]:
+            raise PatchError(f"{rel}: Telegram's colour is back where Pluma's palette was put")
+    for rel, text in sources.items():
+        m = _TELEGRAM_PALETTE_LEFT.search(text)
+        if m:
+            raise PatchError(f"{rel}: Telegram's colour {m.group()!r} is still there")
 
 
 def main(argv=None):
