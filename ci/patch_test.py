@@ -752,8 +752,12 @@ DAMAGE = (
     *((rel, text, damaged(text)) for rel, text in patch.PATH_RELIES_ON),
     # Telegram's site off the screens: each edit.
     *((rel, old, damaged(old)) for rel, old, _ in patch.TELEGRAM_SITE_EDITS),
-    # What was left of Telegram's palette: each edit.
+    # What was left of Telegram's palette and English: each edit, what the
+    # edits rely on, and the places of Pluma's strings.
     *((rel, old, damaged(old)) for rel, old, _ in patch.PALETTE_EDITS),
+    *((rel, old, damaged(old)) for rel, old, _ in patch.STRING_EDITS),
+    *((rel, text, damaged(text)) for rel, text in patch.STRING_RELIES_ON),
+    *(("src/lang.ts", anchor, damaged(anchor)) for anchor, _ in patch.PLUMA_STRINGS),
 )
 
 
@@ -1774,6 +1778,59 @@ class UpstreamTest(unittest.TestCase):
                 changed = dict(sources, **{rel: sources[rel].replace(old, new, 1)})
                 with self.assertRaisesRegex(patch.PatchError, re.escape(error)):
                     patch.verify_palette(changed)
+
+    def test_strings(self):
+        tree, c = self.run_patch()
+        # Send Now of a scheduled message: the language pack's title and question, one form for one message and
+        # a plural for several.
+        send_now = tree.read(patch.SEND_NOW)
+        self.assertIn("    titleLangKey: 'MessageScheduleSend',\n", send_now)
+        self.assertIn("    descriptionLangArgs: [mids.length],\n", send_now)
+        self.assertNotIn("title:", send_now)
+        self.assertNotIn("description:", send_now)
+        lang = tree.read("src/lang.ts")
+        self.assertIn("  'MessageScheduleSend': 'Send Now',\n  'Pluma.Scheduled.SendNow.One': 'Send message now?',\n"
+                      "  'Pluma.Scheduled.SendNow.Many': {\n    'one_value': 'Send %d message now?',\n"
+                      "    'other_value': 'Send %d messages now?'\n  },\n", lang)
+        self.assertIn("  'Pluma.InstantView': 'Instant View',\n", lang)
+        self.assertIn("  'Pluma.Location.PermissionDenied': 'Location permission denied. Please retry later.',\n", lang)
+        # Every Pluma key a patched source asks is one lang.ts or langSign.ts has.
+        keys = set(re.findall(r"^  '(Pluma[\w.]+)':", lang + tree.read(patch.LANG_SIGN), re.MULTILINE))
+        for rel in tree.sources():
+            if rel in ("src/lang.ts", patch.LANG_SIGN):
+                continue
+            for key in re.findall(r"['\"](Pluma(?:Call)?\.[\w.]+)['\"]", tree.read(rel)):
+                with self.subTest(rel=rel, key=key):
+                    self.assertIn(key, keys)
+        player = tree.read(patch.MEDIA_PLAYER)
+        self.assertIn("I18n.format('Call.Fullscreen.Enter', true)", player)
+        self.assertIn("I18n.format('Call.Fullscreen.Exit', true)", player)
+        browser = tree.read(patch.BROWSER)
+        self.assertIn("title: I18n.format('MiniApps.OpenApp', true)", browser)
+        self.assertIn("I18n.format('Pluma.InstantView', true)", browser)
+        self.assertIn("title={I18n.format('CallSettings.DeviceDefault', true)}", tree.read(patch.GENERAL_SETTINGS))
+        group = tree.read(patch.NEW_GROUP)
+        self.assertIn("encodeURIComponent(I18n.getLastRequestedLangCode() || 'en')", group)
+        self.assertIn("I18n.format('Pluma.Location.PermissionDenied', true)", group)
+        self.assertIn("I18n.format('Error.AnError', true)", group)
+
+        sources = {rel: tree.read(rel) for rel in tree.sources()}
+        patch.verify_strings(sources)
+        for rel, old, new, error in (
+            (patch.MEDIA_PLAYER, "I18n.format('Call.Fullscreen.Exit', true)", "'Exit Full Screen'",
+             "index.ts: a string of the screen is English again"),
+            (patch.SEND_NOW, "\n", "\n// Send message now?\n",
+             "sendNow.ts: 'message now?' is English on the screen"),
+            (patch.BROWSER, "\n", "\nconst tab = {title: 'Open App'};\n",
+             "browser.tsx: \"'Open App'\" is English on the screen"),
+            ("src/lang.ts", "  'Pluma.InstantView': 'Instant View',\n", "",
+             "lang.ts: \"'Pluma.InstantView': 'Instant View',\" is not there once"),
+        ):
+            with self.subTest(error=error):
+                self.assertIn(old, sources[rel])
+                changed = dict(sources, **{rel: sources[rel].replace(old, new, 1)})
+                with self.assertRaisesRegex(patch.PatchError, re.escape(error)):
+                    patch.verify_strings(changed)
 
     def test_transcription(self):
         tree, c = self.run_patch()

@@ -1992,8 +1992,9 @@ def patch(tree, c):
     # A release of the site reaches open tabs.
     update_prompts(tree, c)
 
-    # What was left of Telegram's palette.
+    # What was left of Telegram's palette and English.
     palette(tree)
+    strings(tree)
 
 
 def verify(tree, c):
@@ -2139,6 +2140,7 @@ def verify(tree, c):
     verify_login_code_screens(sources)
     verify_update_prompts(tree, c, sources)
     verify_palette(sources)
+    verify_strings(sources)
 
 
 
@@ -7034,11 +7036,13 @@ def verify_paths(sources):
             raise PatchError(f"{PATH_SELECTOR}: a log line names {_PATH_LOG_SECRET.search(m.group(1)).group()!r}")
 
 
-# --- what was left of Telegram's palette (task 118 of the server) -----------------
+# --- what was left of Telegram's palette and English (task 118 of the server) ----
 #
-# Places outside calls that still drew Telegram's blues and greys: the audit
-# of task 118 of the server (2026-11-21). The rest of the client takes its
-# colours from the theme (THEME_COLORS).
+# Places outside calls that still drew Telegram's blues and greys, and screens
+# whose strings were English literals, not the language pack's: the audit of
+# task 118 of the server (2026-11-21). The rest of the client takes its
+# colours from the theme (THEME_COLORS) and its strings from lang.ts, which
+# the server's language pack overrides (langPack.ts getLangPackAndApply).
 
 # The dark theme's accent: links on a toast and on a caption of the media
 # viewer, which are always dark, and the paid messages' Undo on a toast.
@@ -7104,6 +7108,114 @@ def verify_palette(sources):
         m = _TELEGRAM_PALETTE_LEFT.search(text)
         if m:
             raise PatchError(f"{rel}: Telegram's colour {m.group()!r} is still there")
+
+
+# Strings that upstream writes in English on the screen, never translated:
+# each takes a key of the language pack instead. A key of upstream where its
+# words are the same; otherwise a Pluma key of lang.ts (PLUMA_STRINGS), which
+# the server's language pack translates (pkg/langpack, own.json and
+# patchkeys.json of webk). (file, upstream's, Pluma's)
+SEND_NOW = "src/components/popups/sendNow.ts"
+MEDIA_PLAYER = "src/lib/mediaPlayer/index.ts"
+BROWSER = "src/components/browser.tsx"
+GENERAL_SETTINGS = "src/components/sidebarLeft/tabs/generalSettings.tsx"
+NEW_GROUP = "src/components/sidebarLeft/tabs/newGroup.tsx"
+STRING_EDITS = (
+    # Scheduled messages, Send Now of a message's menu and of the selection
+    # (chat/contextMenu.ts, chat/selection.ts): the confirmation.
+    (SEND_NOW,
+     "    title: `Send Message${mids.length > 1 ? 's' : ''} Now`,\n"
+     "    description: mids.length > 1 ? 'Send ' + mids.length + ' messages now?' : 'Send message now?',\n",
+     "    // pluma: the language pack's strings, not English\n"
+     "    titleLangKey: 'MessageScheduleSend',\n"
+     "    descriptionLangKey: mids.length > 1 ? 'Pluma.Scheduled.SendNow.Many' : 'Pluma.Scheduled.SendNow.One',\n"
+     "    descriptionLangArgs: [mids.length],\n"),
+    # The full-screen button of the video player: its tooltip, the words of
+    # a call's full-screen button.
+    (MEDIA_PLAYER, "import {i18n} from '@lib/langPack';\n", "import I18n, {i18n} from '@lib/langPack';\n"),
+    (MEDIA_PLAYER, "      fullScreenButton.setAttribute('title', 'Full Screen');\n",
+     "      fullScreenButton.setAttribute('title', I18n.format('Call.Fullscreen.Enter', true)); // pluma\n"),
+    (MEDIA_PLAYER, "      fullScreenButton.setAttribute('title', 'Exit Full Screen');\n",
+     "      fullScreenButton.setAttribute('title', I18n.format('Call.Fullscreen.Exit', true)); // pluma\n"),
+    # The browser of mini apps: the tab of the apps' catalog, and the tab of
+    # an Instant View page without a title.
+    (BROWSER, "      title: 'Open App',\n", "      title: I18n.format('MiniApps.OpenApp', true), // pluma\n"),
+    (BROWSER, "          return /* webPage().site_name ||  */'Instant View';\n",
+     "          return /* webPage().site_name ||  */I18n.format('Pluma.InstantView', true); // pluma\n"),
+    # Settings, General: the tooltip of the default accent.
+    (GENERAL_SETTINGS, '          title="Default"\n',
+     "          title={I18n.format('CallSettings.DeviceDefault', true)}\n"),
+    # A new group with a location: the errors of the location, and the
+    # address in the app's language, not always in English.
+    (NEW_GROUP, "      uri += '&accept-language=en';\n",
+     "      // pluma: the address in the app's language\n"
+     "      uri += '&accept-language=' + encodeURIComponent(I18n.getLastRequestedLangCode() || 'en');\n"),
+    (NEW_GROUP,
+     "        groupLocationInputField.setValueSilently('Location permission denied. Please retry later.');\n"
+     "      } else {\n"
+     "        groupLocationInputField.setValueSilently('An error has occurred. Please retry later.');\n",
+     "        groupLocationInputField.setValueSilently(I18n.format('Pluma.Location.PermissionDenied', true));\n"
+     "      } else {\n"
+     "        groupLocationInputField.setValueSilently(I18n.format('Error.AnError', true));\n"),
+)
+# What the edits rely on: the files import I18n, and the keys of upstream
+# they take are there with the words they had (lang.ts).
+STRING_RELIES_ON = (
+    (BROWSER, "import I18n, {i18n} from '@lib/langPack';\n"),
+    (GENERAL_SETTINGS, "import I18n from '@lib/langPack';\n"),
+    (NEW_GROUP, "import I18n, {i18n} from '@lib/langPack';\n"),
+    ("src/lang.ts", "  'MessageScheduleSend': 'Send Now',\n"),
+    ("src/lang.ts", "  'Call.Fullscreen.Enter': 'Enter full screen',\n"),
+    ("src/lang.ts", "  'Call.Fullscreen.Exit': 'Exit full screen',\n"),
+    ("src/lang.ts", "  'MiniApps.OpenApp': 'Open App',\n"),
+    ("src/lang.ts", "  'CallSettings.DeviceDefault': 'Default',\n"),
+    ("src/lang.ts", "  'Error.AnError': 'An error occurred. Please try again later.',\n"),
+)
+# The English of Pluma's keys, after the upstream key each follows in
+# lang.ts: (anchor, lines).
+PLUMA_STRINGS = (
+    ("  'MessageScheduleSend': 'Send Now',\n",
+     "  'Pluma.Scheduled.SendNow.One': 'Send message now?',\n"
+     "  'Pluma.Scheduled.SendNow.Many': {\n"
+     "    'one_value': 'Send %d message now?',\n"
+     "    'other_value': 'Send %d messages now?'\n"
+     "  },\n"),
+    ("  'WebPage.InstantView': 'INSTANT VIEW',\n",
+     "  'Pluma.InstantView': 'Instant View',\n"),
+    ("  'AttachLocation': 'Location',\n",
+     "  'Pluma.Location.PermissionDenied': 'Location permission denied. Please retry later.',\n"),
+)
+# The English left on these screens: none of it may come back.
+_ENGLISH_LEFT = (
+    (SEND_NOW, re.compile(r"Send Message|messages now\?|message now\?")),
+    (MEDIA_PLAYER, re.compile(r"'(?:Exit )?Full Screen'")),
+    (BROWSER, re.compile(r"'Open App'|'Instant View'")),
+    (GENERAL_SETTINGS, re.compile(r'title="Default"')),
+    (NEW_GROUP, re.compile(r"accept-language=en|Please retry later")),
+)
+
+
+def strings(tree):
+    for rel, text in STRING_RELIES_ON:
+        tree.expect(rel, text)
+    for rel, old, new in STRING_EDITS:
+        tree.replace(rel, old, new)
+    for anchor, lines in PLUMA_STRINGS:
+        tree.replace("src/lang.ts", anchor, anchor + lines)
+
+
+def verify_strings(sources):
+    for rel, old, new in STRING_EDITS:
+        if sources[rel].count(new) != 1 or old in sources[rel]:
+            raise PatchError(f"{rel}: a string of the screen is English again, not the language pack's")
+    for rel, english in _ENGLISH_LEFT:
+        m = english.search(sources[rel])
+        if m:
+            raise PatchError(f"{rel}: {m.group()!r} is English on the screen, not the language pack's")
+    lang = sources["src/lang.ts"]
+    for anchor, lines in PLUMA_STRINGS:
+        if lang.count(anchor + lines) != 1:
+            raise PatchError(f"src/lang.ts: {lines.strip()[:60]!r} is not there once")
 
 
 def main(argv=None):
