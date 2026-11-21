@@ -7124,10 +7124,12 @@ def verify_palette(sources):
 # owner's decision of 2026-11-21, task 118 of the server).
 #
 # Pluma's Premium gradient, in the order of Telegram's (blue, purple, pink):
-# the dark sage (the blue identity's name, the night wallpaper's), the accent
-# and the soft sage (the blue identity's avatar top). White stays legible on
-# each, as on Telegram's.
-PREMIUM_GRADIENT = ("#4F6E52", "#5B7A5E", "#7FA082")
+# the soft sage (the blue identity's avatar top), the accent and the dark sage
+# (the blue identity's name, the night wallpaper's). The sage follows
+# Telegram's hues as on the other clients: the cool end soft, the warm end
+# deep, so blue, purple and pink are Desktop's premiumButtonBg1 to 3. White
+# stays legible on each, as on Telegram's.
+PREMIUM_GRADIENT = ("#7FA082", "#5B7A5E", "#4F6E52")
 # Telegram's colours of that gradient, as upstream writes them, and Pluma's
 # in their place.
 _PREMIUM_STOPS = {"6b93ff": 0, "6c93ff": 0, "976fff": 1, "e46ace": 2, "df69d1": 2}
@@ -7137,8 +7139,9 @@ _PREMIUM_STOP = re.compile(r"#(" + "|".join(_PREMIUM_STOPS) + r")\b", re.IGNOREC
 def premium_shades(n):
     """n colours evenly spaced along Pluma's Premium gradient (by the
     distance between its colours, so that each step changes as much), from
-    its first stop to its last: Telegram steps its lists of the Premium
-    screens through its hues, Pluma through the shades of its gradient."""
+    its first stop to its last, the soft sage to the deep: Telegram steps its
+    lists of the Premium screens through its hues, Pluma through the shades
+    of its gradient, a cool hue soft and a warm one deep."""
     stops = [tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in PREMIUM_GRADIENT]
     lengths = [sum((b - a) ** 2 for a, b in zip(s, e)) ** .5 for s, e in zip(stops, stops[1:])]
     out = []
@@ -7196,6 +7199,9 @@ _LIMIT_PIN_STOPS = ('<stop stop-color="#6C93FF"/>\n<stop offset="0.489583" stop-
 # icons (promoSlide.tsx 130, PREMIUM_FEATURES_COLORS), the icons of the
 # stories' features (upgradedStoriesFeature.tsx, iconColor) and the bars of
 # the doubled limits (limitsList.tsx 36, backgroundColor), in their order.
+# The features run from orange to green, so their shades run from the deep
+# sage to the soft; the other two from blue to orange, from the soft to the
+# deep.
 _FEATURE_COLORS = ("#ef6922", "#e95a2c", "#e74e33", "#e3433c", "#db374b", "#cb3e6d", "#bc4395", "#ab4ac4",
                    "#9b4fed", "#8958ff", "#676bff", "#5b79ff", "#4492ff", "#429bd5", "#41a6a5", "#3eb26d",
                    "#3dbd4a")
@@ -7221,7 +7227,7 @@ PREMIUM_EDITS = (
     (LIMIT_PIN, _LIMIT_PIN_STOPS, _premium_line(_LIMIT_PIN_STOPS, comment=None)),
     (PREMIUM_FEATURES, _feature_colors_ts(_FEATURE_COLORS),
      "// pluma: the shades of Pluma's Premium gradient, in place of Telegram's hues\n"
-     + _feature_colors_ts(premium_shades(len(_FEATURE_COLORS)))),
+     + _feature_colors_ts(premium_shades(len(_FEATURE_COLORS))[::-1])),
 )
 # The lists of features inside their objects: (head, key, Telegram's colours).
 PREMIUM_FEATURE_LISTS = (

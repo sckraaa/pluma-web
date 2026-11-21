@@ -349,9 +349,9 @@ class PremiumGradientTest(unittest.TestCase):
                 shades = patch.premium_shades(n)
                 self.assertEqual(len(shades), n)
                 self.assertEqual((shades[0], shades[-1]), (patch.PREMIUM_GRADIENT[0], patch.PREMIUM_GRADIENT[-1]))
-                # From dark to light, every step the same up to rounding.
+                # From light to dark, every step the same up to rounding.
                 light = [sum(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in shades]
-                steps = [b - a for a, b in zip(light, light[1:])]
+                steps = [a - b for a, b in zip(light, light[1:])]
                 self.assertTrue(all(d > 0 for d in steps), shades)
                 self.assertLessEqual(max(steps) - min(steps), 3, shades)
         self.assertIn(patch.PREMIUM_GRADIENT[1], patch.premium_shades(5))
@@ -1835,10 +1835,10 @@ class UpstreamTest(unittest.TestCase):
         features = tree.read(patch.PREMIUM_FEATURES)
         self.assertIn("export const PREMIUM_FEATURES_COLORS: string[] = [\n  '#4F6E52',\n  '#527155',\n", features)
         self.assertIn("  '#7C9D7F',\n  '#7FA082'\n];\n", features)
-        self.assertIn("    iconColor: '#4F6E52',\n    icon: 'multistories'", features)
-        self.assertIn("    iconColor: '#7FA082',\n    icon: 'limit_link'", features)
-        self.assertIn("    limitType: 'channels',\n    backgroundColor: '#4F6E52'", features)
-        self.assertIn("    premium: 4,\n    backgroundColor: '#7FA082'", features)
+        self.assertIn("    iconColor: '#7FA082',\n    icon: 'multistories'", features)
+        self.assertIn("    iconColor: '#4F6E52',\n    icon: 'limit_link'", features)
+        self.assertIn("    limitType: 'channels',\n    backgroundColor: '#7FA082'", features)
+        self.assertIn("    premium: 4,\n    backgroundColor: '#4F6E52'", features)
         # The star of the popup is Pluma's.
         for rel in ("assets/img/premium-star.png", "assets/img/premium-star@2x.png"):
             self.assertEqual((self.root / "public" / rel).read_bytes(), (patch.BRAND / "web" / rel).read_bytes())
@@ -1856,7 +1856,7 @@ class UpstreamTest(unittest.TestCase):
              "_stars.scss: Telegram's Premium colour '976fff' is still there"),
             ("src/scss/partials/_ckin.scss", "\n", "\n.x { color: #E46ACE; }\n",
              "_ckin.scss: Telegram's Premium colour 'E46ACE' is still there"),
-            (patch.PREMIUM_FEATURES, "    iconColor: '#4F6E52',", "    iconColor: '#527155',",
+            (patch.PREMIUM_FEATURES, "    iconColor: '#7FA082',", "    iconColor: '#7C9D7F',",
              "featuresConfig.ts: the iconColor of const stories"),
         ):
             with self.subTest(error=error):
