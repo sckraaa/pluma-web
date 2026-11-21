@@ -90,6 +90,26 @@ tile 270 270 126 135 113 mstile-150x150.png
 tile 558 558 259 279 258 mstile-310x310.png
 tile 558 270 126 279 113 mstile-310x150.png
 
+# The Premium star (premium-star.png and @2x: the header of the Premium
+# popup, popups/premium.tsx): upstream's star, telegram-premium-star*.png of
+# tweb's public/assets/img, in Pluma's Premium gradient (premium-gradient.svg,
+# ci/patch.py PREMIUM_GRADIENT, at the angle and stops of upstream's
+# --premium-gradient). Its colour comes from the gradient, its light and
+# shade from upstream's star (Lab: the gradient's lightness overlaid with the
+# star's, the gradient's a and b), its shape and sparkles from the star's
+# alpha.
+premium_star() {
+	local star=$1 size=$2 name=$3
+	render "$src/premium-gradient.svg" "$size" "$size" "$tmp/gradient.png"
+	magick "$tmp/gradient.png" -alpha off -colorspace Lab -separate "$tmp/gradient-%d.png"
+	magick "$star" -alpha off -colorspace Lab -channel R -separate "$tmp/star-l.png"
+	magick "$tmp/gradient-0.png" "$tmp/star-l.png" -compose Overlay -composite "$tmp/l.png"
+	png "$tmp/l.png" "$tmp/gradient-1.png" "$tmp/gradient-2.png" -set colorspace Lab -combine -colorspace sRGB \
+		\( "$star" -alpha extract \) -compose CopyOpacity -composite "$out/$name"
+}
+premium_star "$src/telegram-premium-star.png" 100 premium-star.png
+premium_star "$src/telegram-premium-star@2x.png" 200 premium-star@2x.png
+
 # SVGs the client loads as they are.
 cp "$src/pluma-qr-logo.svg" "$out/logo_padded.svg"
 cp "$src/pluma-mark-mono.svg" "$out/logo_plain.svg"
