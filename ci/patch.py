@@ -1649,9 +1649,9 @@ _TELEGRAM_LINK_HOST = re.compile(r"(?<![\w.-])(?:t|telegram)\.(?:me|dog)(?![\w-]
 # reach it: the links that lead to Telegram's services are taken away (the
 # FAQ of help_section); these stay.
 SITE_KEEP = {
-    # Terms, privacy and ad policies of Stars, gifts, mini apps and bots,
-    # and the unsupported-message hints, in the built-in English strings.
-    "src/lang.ts": 23,
+    # Terms, privacy and ad policies of Stars, gifts, mini apps and bots, in
+    # the built-in English strings.
+    "src/lang.ts": 17,
     "src/components/popups/starGiftInfo.tsx": 1,
     "src/helpers/getBotPrivacyPolicy.ts": 1,
     # The switch to Web A and the choice made for it: on Telegram's own
@@ -1674,10 +1674,28 @@ SITE_KEEP = {
 _TELEGRAM_SITE = re.compile(r"(?<![\w-])(?:[\w-]+\.)*telegram\.org(?![\w-])")
 
 # Links to Telegram's site that an ordinary screen shows: Telegram's apps on
-# the chat list of an account with no contacts, and "Learn More" of the chat
-# automation tab, which the Settings search opens. Applied before rebrand
-# renames the word in the strings: (file, text, replacement).
+# the chat list of an account with no contacts, "Learn More" of the chat
+# automation tab, which the Settings search opens, and the apps a message or
+# a video the browser cannot show sends the user to (chat/bubbles.ts,
+# messageForReply.ts, messageActionTextNewUnsafe.ts, mediaViewer/base.ts):
+# Pluma's site there, where its apps are, as the Android patch has it for
+# telegram.org/dl and the server's language packs for getdesktop.telegram.org
+# (clientLinks of pkg/langpack). Applied before rebrand renames the word in
+# the strings: (file, text, replacement).
+_UNSUPPORTED = "'__This message is currently not supported on Telegram Web. Try "
+_UNPLAYABLE = "'__Unfortunately, this video can\\'t be played on Telegram Web. Try opening it with our "
 TELEGRAM_SITE_EDITS = (
+    *(("src/lang.ts", f"  '{key}': {start}{old}{end}',\n", f"  '{key}': {start}{new}{end}',\n")
+      for key, start, old, new, end in (
+          ("Message.Unsupported.Desktop", _UNSUPPORTED, "[getdesktop.telegram.org](https://getdesktop.telegram.org/)",
+           "[pluma.chat](https://pluma.chat/)", "__"),
+          ("Message.Unsupported.Mobile", _UNSUPPORTED, "[telegram.org/dl](https://telegram.org/dl/)",
+           "[pluma.chat](https://pluma.chat/)", "__"),
+          ("Video.Unsupported.Desktop", _UNPLAYABLE, "[desktop app](https://getdesktop.telegram.org/)",
+           "[desktop app](https://pluma.chat/)", " instead.__"),
+          ("Video.Unsupported.Mobile", _UNPLAYABLE, "[mobile app](https://telegram.org/dl/)",
+           "[mobile app](https://pluma.chat/)", " instead.__"),
+      )),
     ("src/lang.ts",
      "'ChatList.Main.EmptyPlaceholder.SubtitleNoContacts': 'Use Telegram app on your "
      "[Android](https://telegram.org/android) or [iOS](https://telegram.org/dl/ios) device to sync your contacts',\n",

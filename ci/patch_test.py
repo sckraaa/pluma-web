@@ -750,6 +750,8 @@ DAMAGE = (
     # The paths to the server: each edit, and what the edits rely on.
     *((rel, old, damaged(old)) for rel, old, _ in patch.PATH_EDITS),
     *((rel, text, damaged(text)) for rel, text in patch.PATH_RELIES_ON),
+    # Telegram's site off the screens: each edit.
+    *((rel, old, damaged(old)) for rel, old, _ in patch.TELEGRAM_SITE_EDITS),
     # What was left of Telegram's palette: each edit.
     *((rel, old, damaged(old)) for rel, old, _ in patch.PALETTE_EDITS),
 )
@@ -1173,6 +1175,16 @@ class UpstreamTest(unittest.TestCase):
         automation = tree.read("src/components/sidebarLeft/tabs/chatAutomation.tsx")
         self.assertNotIn("telegram.org", automation)
         self.assertNotIn("learnMoreAnchor", automation)
+        # A message or a video the browser cannot show sends the user to
+        # Pluma's site, not to Telegram's apps.
+        for key in ("Message.Unsupported.Desktop", "Message.Unsupported.Mobile", "Video.Unsupported.Desktop",
+                    "Video.Unsupported.Mobile"):
+            with self.subTest(key=key):
+                line = next(line for line in lang.split("\n") if line.startswith(f"  '{key}': "))
+                self.assertIn("(https://pluma.chat/)", line)
+                self.assertIn("Pluma Web", line)
+                self.assertNotIn("telegram.org", line)
+        self.assertIn("Try [pluma.chat](https://pluma.chat/)__',", lang)
 
     def test_premium_stickers(self):
         tree, _ = self.run_patch()
