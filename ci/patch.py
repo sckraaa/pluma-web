@@ -7173,13 +7173,13 @@ STRING_RELIES_ON = (
 )
 # The English of Pluma's keys, after the upstream key each follows in
 # lang.ts: (anchor, lines).
+# The server's language pack serves Pluma's own keys as plain strings, never
+# plural ones (pkg/langpack own.json), so a key with a count is plain here
+# too: Pluma.Scheduled.SendNow.Many is only asked for two messages or more.
 PLUMA_STRINGS = (
     ("  'MessageScheduleSend': 'Send Now',\n",
      "  'Pluma.Scheduled.SendNow.One': 'Send message now?',\n"
-     "  'Pluma.Scheduled.SendNow.Many': {\n"
-     "    'one_value': 'Send %d message now?',\n"
-     "    'other_value': 'Send %d messages now?'\n"
-     "  },\n"),
+     "  'Pluma.Scheduled.SendNow.Many': 'Send %d messages now?',\n"),
     ("  'WebPage.InstantView': 'INSTANT VIEW',\n",
      "  'Pluma.InstantView': 'Instant View',\n"),
     ("  'AttachLocation': 'Location',\n",

@@ -1782,7 +1782,7 @@ class UpstreamTest(unittest.TestCase):
     def test_strings(self):
         tree, c = self.run_patch()
         # Send Now of a scheduled message: the language pack's title and question, one form for one message and
-        # a plural for several.
+        # one, plain as the server's own strings are, for several.
         send_now = tree.read(patch.SEND_NOW)
         self.assertIn("    titleLangKey: 'MessageScheduleSend',\n", send_now)
         self.assertIn("    descriptionLangArgs: [mids.length],\n", send_now)
@@ -1790,8 +1790,7 @@ class UpstreamTest(unittest.TestCase):
         self.assertNotIn("description:", send_now)
         lang = tree.read("src/lang.ts")
         self.assertIn("  'MessageScheduleSend': 'Send Now',\n  'Pluma.Scheduled.SendNow.One': 'Send message now?',\n"
-                      "  'Pluma.Scheduled.SendNow.Many': {\n    'one_value': 'Send %d message now?',\n"
-                      "    'other_value': 'Send %d messages now?'\n  },\n", lang)
+                      "  'Pluma.Scheduled.SendNow.Many': 'Send %d messages now?',\n", lang)
         self.assertIn("  'Pluma.InstantView': 'Instant View',\n", lang)
         self.assertIn("  'Pluma.Location.PermissionDenied': 'Location permission denied. Please retry later.',\n", lang)
         # Every Pluma key a patched source asks is one lang.ts or langSign.ts has.
