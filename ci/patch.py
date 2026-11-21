@@ -509,10 +509,11 @@ def patch_manifest(tree, rel, c):
 # Where the footer of the menu points: the source of this build (GPL).
 SOURCE_URL = "https://github.com/sckraaa/pluma-web"
 
-# Pluma's icons and logos (brand/web, rendered from brand/src by
-# brand/render.sh) over Telegram's, file for file: (path in public/, SHA-256
-# of upstream's file). The file names stay: the page, the manifests and the
-# code refer to them.
+# Pluma's icons and logos, and the star of the Premium popup in Pluma's
+# Premium gradient (brand/web, rendered from brand/src by brand/render.sh)
+# over Telegram's, file for file: (path in public/, SHA-256 of upstream's
+# file). The file names stay: the page, the manifests and the code refer to
+# them.
 ICONS = (
     ("assets/img/android-chrome-144x144.png", "26de77d7358a970649c4d464f84fcb4792cdd1734b028218e8e6a1eb058eea97"),
     ("assets/img/android-chrome-192x192.png", "25aa724658da8e71f5cc7c35ccbb43075866af5bed964edb09979caace667b0b"),
@@ -547,6 +548,8 @@ ICONS = (
     ("assets/img/mstile-310x310.png", "c711dbfec7bbab5b812b3ff36a18d41ab9a492739d93ba950cfcdfc3e212ff0e"),
     ("assets/img/mstile-70x70.png", "1c0d3d1571e91eceebd4441fcfb4e3b2643cc5cd01fbbba95d80ee56f3fccf4a"),
     ("assets/img/safari-pinned-tab.svg", "69303a550a2d739ec1e9d5cf7704dc9e09fc05886b190780ec96c1cbefbabf92"),
+    ("assets/img/premium-star.png", "5b32d2439fc18a678a13e9c678a4bbee81f5fb9641d99f1e926a3cb45bf229ca"),
+    ("assets/img/premium-star@2x.png", "09824a4d965ef8ddff27a023baad605f88b7295355c46ae1de906d6b8e1ba029"),
 )
 
 # Telegram's interface in a screenshot, for the install sheet of the web app
@@ -1994,6 +1997,7 @@ def patch(tree, c):
 
     # What was left of Telegram's palette and English.
     palette(tree)
+    premium_gradient(tree)
     strings(tree)
 
 
@@ -2140,6 +2144,7 @@ def verify(tree, c):
     verify_login_code_screens(sources)
     verify_update_prompts(tree, c, sources)
     verify_palette(sources)
+    verify_premium_gradient(tree, sources)
     verify_strings(sources)
 
 
@@ -7108,6 +7113,162 @@ def verify_palette(sources):
         m = _TELEGRAM_PALETTE_LEFT.search(text)
         if m:
             raise PatchError(f"{rel}: Telegram's colour {m.group()!r} is still there")
+
+
+# --- the Premium gradient ------------------------------------------------------
+#
+# Every user has Premium (ADR 0041 of the server) and its screens are still
+# there: the Premium popup with its list of features, the bars of the doubled
+# limits, the limit popups, the star at the top. Telegram draws them with its
+# blue, purple and pink gradient; Pluma's is sage, from the palette above (the
+# owner's decision of 2026-11-21, task 118 of the server).
+#
+# Pluma's Premium gradient, in the order of Telegram's (blue, purple, pink):
+# the dark sage (the blue identity's name, the night wallpaper's), the accent
+# and the soft sage (the blue identity's avatar top). White stays legible on
+# each, as on Telegram's.
+PREMIUM_GRADIENT = ("#4F6E52", "#5B7A5E", "#7FA082")
+# Telegram's colours of that gradient, as upstream writes them, and Pluma's
+# in their place.
+_PREMIUM_STOPS = {"6b93ff": 0, "6c93ff": 0, "976fff": 1, "e46ace": 2, "df69d1": 2}
+_PREMIUM_STOP = re.compile(r"#(" + "|".join(_PREMIUM_STOPS) + r")\b", re.IGNORECASE)
+
+
+def premium_shades(n):
+    """n colours evenly spaced along Pluma's Premium gradient (by the
+    distance between its colours, so that each step changes as much), from
+    its first stop to its last: Telegram steps its lists of the Premium
+    screens through its hues, Pluma through the shades of its gradient."""
+    stops = [tuple(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in PREMIUM_GRADIENT]
+    lengths = [sum((b - a) ** 2 for a, b in zip(s, e)) ** .5 for s, e in zip(stops, stops[1:])]
+    out = []
+    for i in range(n):
+        d = sum(lengths) * i / (n - 1)
+        k = 0
+        while k < len(lengths) - 1 and d > lengths[k]:
+            d -= lengths[k]
+            k += 1
+        f = d / lengths[k]
+        out.append("#" + "".join(f"{round(a + (b - a) * f):02X}" for a, b in zip(stops[k], stops[k + 1])))
+    return out
+
+
+def _premium_line(line, comment=" // pluma: Pluma's Premium gradient"):
+    new = _PREMIUM_STOP.sub(lambda m: PREMIUM_GRADIENT[_PREMIUM_STOPS[m.group(1).lower()]], line)
+    return new[:-1] + comment + "\n" if comment else new
+
+
+PREMIUM_FEATURES = "src/components/premium/featuresConfig.ts"
+LIMIT_PIN = "public/assets/img/accounts-limit-pin-shape.svg"
+# The lines of Telegram's gradient: the Premium variables, which the popup's
+# header, the Premium row's icon, the boosts' and stars' badges read
+# (rowIconBackground.ts 172-173, _premium.scss 296, _stars.scss 148, 290,
+# _rightSidebar.scss 561, _selector.scss 408); the bars of the limits
+# (limit.ts, limitLineTsx.tsx) and their hints; the accounts limit's popup
+# and its pin; the gift's button. (file, upstream's line)
+_PREMIUM_LINES = (
+    ("src/scss/base.scss",
+     "  --premium-gradient: linear-gradient(52.62deg, #6B93FF 12.22%, #976FFF 50.25%, #E46ACE 98.83%);\n"),
+    ("src/scss/partials/_limitLine.scss",
+     "      background: linear-gradient(calc(73.4deg * var(--reflect)), #6C93FF -7.21%, #976FFF 114.57%, "
+     "#DF69D1 241.52%);\n"),
+    ("src/scss/partials/_limitLine.scss",
+     "      background: linear-gradient(calc(84.4deg * var(--reflect)),#6c93ff -4.85%,#976fff 51.72%,"
+     "#df69d1 110.7%);\n"),
+    ("src/scss/partials/_limitLine.scss",
+     "    --limit-background: linear-gradient(calc(84.4deg * var(--reflect)), #6C93FF -4.85%, #976FFF 51.72%, "
+     "#DF69D1 110.7%);\n"),
+    ("src/components/limitLineTsx.module.scss",
+     "  --limit-background: linear-gradient(calc(84.4deg * var(--reflect)), #6C93FF -4.85%, #976FFF 51.72%, "
+     "#DF69D1 110.7%);\n"),
+    ("src/scss/partials/popups/_accountsLimit.scss",
+     "    background: linear-gradient(calc(84.4deg * var(--reflect)), #6C93FF -4.85%, #976FFF 51.72%, "
+     "#DF69D1 110.7%);\n"),
+    ("src/scss/partials/popups/_giftPremium.scss",
+     "    background: linear-gradient(88.39deg, #6C93FF -2.56%, #976FFF 51.27%, #DF69D1 107.39%) !important;\n"),
+)
+# The pin of the accounts limit (sidebarLeft/accountsLimitPopupContent.tsx),
+# an SVG the page loads: its gradient's stops.
+_LIMIT_PIN_STOPS = ('<stop stop-color="#6C93FF"/>\n<stop offset="0.489583" stop-color="#976FFF"/>\n'
+                    '<stop offset="1" stop-color="#DF69D1"/>\n')
+
+# Telegram's steps of hues in the lists of the Premium popup: the features'
+# icons (promoSlide.tsx 130, PREMIUM_FEATURES_COLORS), the icons of the
+# stories' features (upgradedStoriesFeature.tsx, iconColor) and the bars of
+# the doubled limits (limitsList.tsx 36, backgroundColor), in their order.
+_FEATURE_COLORS = ("#ef6922", "#e95a2c", "#e74e33", "#e3433c", "#db374b", "#cb3e6d", "#bc4395", "#ab4ac4",
+                   "#9b4fed", "#8958ff", "#676bff", "#5b79ff", "#4492ff", "#429bd5", "#41a6a5", "#3eb26d",
+                   "#3dbd4a")
+_STORY_ICON_COLORS = ("#0079FE", "#7889FE", "#A45FE6", "#C355AE", "#E85D43", "#F1822A", "#E6AC19")
+_LIMIT_COLORS = ("#5B9FFF", "#7889FE", "#9376FF", "#AB63F2", "#C456AE", "#CE569A", "#DA5786", "#DB496F",
+                 "#E85D43", "#F1822A")
+
+
+def _feature_colors_ts(colors):
+    return ("export const PREMIUM_FEATURES_COLORS: string[] = [\n"
+            + ",\n".join(f"  '{c}'" for c in colors) + "\n];\n")
+
+
+# (file, upstream's, Pluma's)
+PREMIUM_EDITS = (
+    *((rel, line, _premium_line(line)) for rel, line in _PREMIUM_LINES),
+    ("src/scss/base.scss", "  --premium-color: #9275ff;\n",
+     f"  --premium-color: {PREMIUM_GRADIENT[1]}; // pluma: the middle of Pluma's Premium gradient\n"),
+    # The dot of the slide shown in the popup's carousel.
+    ("src/scss/partials/popups/_premium.scss",
+     "      &.active {\n        background-color: #8F77FF;\n",
+     "      &.active {\n        background-color: var(--premium-color); // pluma: Pluma's Premium colour\n"),
+    (LIMIT_PIN, _LIMIT_PIN_STOPS, _premium_line(_LIMIT_PIN_STOPS, comment=None)),
+    (PREMIUM_FEATURES, _feature_colors_ts(_FEATURE_COLORS),
+     "// pluma: the shades of Pluma's Premium gradient, in place of Telegram's hues\n"
+     + _feature_colors_ts(premium_shades(len(_FEATURE_COLORS)))),
+)
+# The lists of features inside their objects: (head, key, Telegram's colours).
+PREMIUM_FEATURE_LISTS = (
+    ("const stories: PremiumPromoFeature = {\n", "iconColor", _STORY_ICON_COLORS),
+    ("const doubleLimits: PremiumPromoFeature = {\n", "backgroundColor", _LIMIT_COLORS),
+)
+# Telegram's colours of Premium, gone from every source and from the pin. Its
+# purple and pink are also the gradient of a live stream's badge in the video
+# player (_ckin.scss .controls-live), which is not a Premium screen: the
+# audit of task 118 left live streams (RTMP) out as unreachable, and the
+# badge keeps them.
+TELEGRAM_PREMIUM_COLORS = ("6b93ff", "6c93ff", "df69d1", "9275ff", "8f77ff")
+TELEGRAM_PREMIUM_SHARED = ("976fff", "e46ace")
+PREMIUM_SHARED_KEEP = {"src/scss/partials/_ckin.scss": 1}
+_TELEGRAM_PREMIUM = re.compile(r"(?<![0-9A-Fa-f])(?:" + "|".join(TELEGRAM_PREMIUM_COLORS) + r")(?![0-9A-Fa-f])",
+                               re.IGNORECASE)
+_TELEGRAM_PREMIUM_SHARED = re.compile(r"(?<![0-9A-Fa-f])(?:" + "|".join(TELEGRAM_PREMIUM_SHARED) +
+                                      r")(?![0-9A-Fa-f])", re.IGNORECASE)
+
+
+def premium_gradient(tree):
+    for rel, old, new in PREMIUM_EDITS:
+        tree.replace(rel, old, new)
+    for head, key, colors in PREMIUM_FEATURE_LISTS:
+        tree.replace_within(PREMIUM_FEATURES, head, "\n};\n",
+                            [(f"{key}: '{old}'", f"{key}: '{new}'", 1)
+                             for old, new in zip(colors, premium_shades(len(colors)))])
+
+
+def verify_premium_gradient(tree, sources):
+    texts = dict(sources, **{LIMIT_PIN: tree.read(LIMIT_PIN)})
+    for rel, old, new in PREMIUM_EDITS:
+        if texts[rel].count(new) != 1 or old in texts[rel]:
+            raise PatchError(f"{rel}: Telegram's Premium gradient is back where Pluma's was put")
+    features = texts[PREMIUM_FEATURES]
+    for head, key, colors in PREMIUM_FEATURE_LISTS:
+        start = features.find(head)
+        body = features[start:features.find("\n};\n", start)] if start >= 0 else ""
+        if [c.upper() for c in re.findall(rf"\b{key}: '(#[0-9A-Fa-f]{{6}})'", body)] != premium_shades(len(colors)):
+            raise PatchError(f"{PREMIUM_FEATURES}: the {key} of {head.strip()} are not the shades of Pluma's "
+                             "Premium gradient")
+    for rel, text in texts.items():
+        m = _TELEGRAM_PREMIUM.search(text)
+        if not m and len(_TELEGRAM_PREMIUM_SHARED.findall(text)) != 2 * PREMIUM_SHARED_KEEP.get(rel, 0):
+            m = _TELEGRAM_PREMIUM_SHARED.search(text)
+        if m:
+            raise PatchError(f"{rel}: Telegram's Premium colour {m.group()!r} is still there")
 
 
 # Strings that upstream writes in English on the screen, never translated:

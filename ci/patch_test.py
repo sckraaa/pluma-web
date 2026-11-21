@@ -324,6 +324,39 @@ class IdentityColorsTest(unittest.TestCase):
             self.assertIn(identity, patch.IDENTITY_COLORS)
 
 
+class PremiumGradientTest(unittest.TestCase):
+    def test_from_the_palette(self):
+        # Pluma's Premium gradient takes the palette's colours, not new ones.
+        palette = {new.upper() for table in patch.THEME_COLORS.values() for _, _, new in table}
+        palette |= {c.upper() for table in patch.IDENTITY_COLORS.values() for _, _, c in table if c}
+        palette |= {"#" + c.upper() for colors in patch.CALL_BACKGROUNDS.values() for c in colors}
+        palette |= {"#" + c.upper() for _, new in patch.THEME_SETTINGS for c in re.findall(r"0x([0-9A-Fa-f]{6})", new)}
+        for color in patch.PREMIUM_GRADIENT:
+            with self.subTest(color=color):
+                self.assertIn(color, palette)
+
+    def test_star_gradient(self):
+        # The star brand/render.sh draws is in the same gradient as the page's.
+        svg = (patch.BRAND / "src/premium-gradient.svg").read_text()
+        self.assertEqual(tuple(re.findall(r'stop-color="(#[0-9A-F]{6})"', svg)), patch.PREMIUM_GRADIENT)
+        self.assertEqual(re.findall(r'offset="([\d.]+)"', svg), ["0.1222", "0.5025", "0.9883"])
+        self.assertIn("52.62deg, {} 12.22%, {} 50.25%, {} 98.83%".format(*patch.PREMIUM_GRADIENT),
+                      patch.PREMIUM_EDITS[0][2])
+
+    def test_shades(self):
+        for n in (2, 7, 10, 17):
+            with self.subTest(n=n):
+                shades = patch.premium_shades(n)
+                self.assertEqual(len(shades), n)
+                self.assertEqual((shades[0], shades[-1]), (patch.PREMIUM_GRADIENT[0], patch.PREMIUM_GRADIENT[-1]))
+                # From dark to light, every step the same up to rounding.
+                light = [sum(int(c[i:i + 2], 16) for i in (1, 3, 5)) for c in shades]
+                steps = [b - a for a, b in zip(light, light[1:])]
+                self.assertTrue(all(d > 0 for d in steps), shades)
+                self.assertLessEqual(max(steps) - min(steps), 3, shades)
+        self.assertIn(patch.PREMIUM_GRADIENT[1], patch.premium_shades(5))
+
+
 class TreeTest(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory()
@@ -755,6 +788,11 @@ DAMAGE = (
     # What was left of Telegram's palette and English: each edit, what the
     # edits rely on, and the places of Pluma's strings.
     *((rel, old, damaged(old)) for rel, old, _ in patch.PALETTE_EDITS),
+    # Pluma's Premium gradient: each edit, and each colour of the lists of features.
+    *((rel, old, damaged(old)) for rel, old, _ in patch.PREMIUM_EDITS),
+    *((patch.PREMIUM_FEATURES, f"{key}: '{c}'", damaged(f"{key}: '{c}'"))
+      for _, key, colors in patch.PREMIUM_FEATURE_LISTS for c in colors[:1] + colors[-1:]),
+    *((patch.PREMIUM_FEATURES, head, damaged(head)) for head, _, _ in patch.PREMIUM_FEATURE_LISTS),
     *((rel, old, damaged(old)) for rel, old, _ in patch.STRING_EDITS),
     *((rel, text, damaged(text)) for rel, text in patch.STRING_RELIES_ON),
     *(("src/lang.ts", anchor, damaged(anchor)) for anchor, _ in patch.PLUMA_STRINGS),
@@ -1778,6 +1816,61 @@ class UpstreamTest(unittest.TestCase):
                 changed = dict(sources, **{rel: sources[rel].replace(old, new, 1)})
                 with self.assertRaisesRegex(patch.PatchError, re.escape(error)):
                     patch.verify_palette(changed)
+
+    def test_premium_gradient(self):
+        tree, c = self.run_patch()
+        g = patch.PREMIUM_GRADIENT
+        base = tree.read(BASE)
+        self.assertIn(f"  --premium-gradient: linear-gradient(52.62deg, {g[0]} 12.22%, {g[1]} 50.25%, {g[2]} 98.83%);",
+                      base)
+        self.assertIn(f"  --premium-color: {g[1]};", base)
+        self.assertIn("        background-color: var(--premium-color);", tree.read("src/scss/partials/popups/_premium.scss"))
+        for rel in ("src/scss/partials/_limitLine.scss", "src/components/limitLineTsx.module.scss",
+                    "src/scss/partials/popups/_accountsLimit.scss", "src/scss/partials/popups/_giftPremium.scss"):
+            with self.subTest(rel=rel):
+                self.assertRegex(tree.read(rel), rf"{g[0]} -?[\d.]+%, {g[1]} [\d.]+%, {g[2]} [\d.]+%")
+        self.assertIn(f'<stop stop-color="{g[0]}"/>\n<stop offset="0.489583" stop-color="{g[1]}"/>\n'
+                      f'<stop offset="1" stop-color="{g[2]}"/>\n', tree.read(patch.LIMIT_PIN))
+        # The lists of the popup: the features, the stories' features, the doubled limits.
+        features = tree.read(patch.PREMIUM_FEATURES)
+        self.assertIn("export const PREMIUM_FEATURES_COLORS: string[] = [\n  '#4F6E52',\n  '#527155',\n", features)
+        self.assertIn("  '#7C9D7F',\n  '#7FA082'\n];\n", features)
+        self.assertIn("    iconColor: '#4F6E52',\n    icon: 'multistories'", features)
+        self.assertIn("    iconColor: '#7FA082',\n    icon: 'limit_link'", features)
+        self.assertIn("    limitType: 'channels',\n    backgroundColor: '#4F6E52'", features)
+        self.assertIn("    premium: 4,\n    backgroundColor: '#7FA082'", features)
+        # The star of the popup is Pluma's.
+        for rel in ("assets/img/premium-star.png", "assets/img/premium-star@2x.png"):
+            self.assertEqual((self.root / "public" / rel).read_bytes(), (patch.BRAND / "web" / rel).read_bytes())
+        # The badge of a live stream keeps its gradient.
+        self.assertIn("#976FFF 20.35%, #E46ACE 100.03%", tree.read("src/scss/partials/_ckin.scss"))
+
+        sources = {rel: tree.read(rel) for rel in tree.sources()}
+        patch.verify_premium_gradient(tree, sources)
+        for rel, old, new, error in (
+            (BASE, f"  --premium-color: {g[1]};", "  --premium-color: #9275ff;",
+             "base.scss: Telegram's Premium gradient is back"),
+            ("src/components/popups/premium.tsx", "\n", "\nconst c = '#6B93FF';\n",
+             "premium.tsx: Telegram's Premium colour '6B93FF' is still there"),
+            ("src/scss/partials/popups/_stars.scss", "\n", "\n.x { color: #976fff; }\n",
+             "_stars.scss: Telegram's Premium colour '976fff' is still there"),
+            ("src/scss/partials/_ckin.scss", "\n", "\n.x { color: #E46ACE; }\n",
+             "_ckin.scss: Telegram's Premium colour 'E46ACE' is still there"),
+            (patch.PREMIUM_FEATURES, "    iconColor: '#4F6E52',", "    iconColor: '#527155',",
+             "featuresConfig.ts: the iconColor of const stories"),
+        ):
+            with self.subTest(error=error):
+                self.assertIn(old, sources[rel])
+                changed = dict(sources, **{rel: sources[rel].replace(old, new, 1)})
+                with self.assertRaisesRegex(patch.PatchError, re.escape(error)):
+                    patch.verify_premium_gradient(tree, changed)
+        pin = tree.read(patch.LIMIT_PIN)
+        try:
+            tree.write(patch.LIMIT_PIN, pin.replace(g[2], "#DF69D1"))
+            with self.assertRaisesRegex(patch.PatchError, "accounts-limit-pin-shape.svg"):
+                patch.verify_premium_gradient(tree, sources)
+        finally:
+            tree.write(patch.LIMIT_PIN, pin)
 
     def test_strings(self):
         tree, c = self.run_patch()
