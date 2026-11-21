@@ -1649,9 +1649,9 @@ _TELEGRAM_LINK_HOST = re.compile(r"(?<![\w.-])(?:t|telegram)\.(?:me|dog)(?![\w-]
 # reach it: the links that lead to Telegram's services are taken away (the
 # FAQ of help_section); these stay.
 SITE_KEEP = {
-    # Terms, privacy and ad policies of Stars, gifts, mini apps and bots,
-    # and the unsupported-message hints, in the built-in English strings.
-    "src/lang.ts": 23,
+    # Terms, privacy and ad policies of Stars, gifts, mini apps and bots, in
+    # the built-in English strings.
+    "src/lang.ts": 17,
     "src/components/popups/starGiftInfo.tsx": 1,
     "src/helpers/getBotPrivacyPolicy.ts": 1,
     # The switch to Web A and the choice made for it: on Telegram's own
@@ -1674,10 +1674,28 @@ SITE_KEEP = {
 _TELEGRAM_SITE = re.compile(r"(?<![\w-])(?:[\w-]+\.)*telegram\.org(?![\w-])")
 
 # Links to Telegram's site that an ordinary screen shows: Telegram's apps on
-# the chat list of an account with no contacts, and "Learn More" of the chat
-# automation tab, which the Settings search opens. Applied before rebrand
-# renames the word in the strings: (file, text, replacement).
+# the chat list of an account with no contacts, "Learn More" of the chat
+# automation tab, which the Settings search opens, and the apps a message or
+# a video the browser cannot show sends the user to (chat/bubbles.ts,
+# messageForReply.ts, messageActionTextNewUnsafe.ts, mediaViewer/base.ts):
+# Pluma's site there, where its apps are, as the Android patch has it for
+# telegram.org/dl and the server's language packs for getdesktop.telegram.org
+# (clientLinks of pkg/langpack). Applied before rebrand renames the word in
+# the strings: (file, text, replacement).
+_UNSUPPORTED = "'__This message is currently not supported on Telegram Web. Try "
+_UNPLAYABLE = "'__Unfortunately, this video can\\'t be played on Telegram Web. Try opening it with our "
 TELEGRAM_SITE_EDITS = (
+    *(("src/lang.ts", f"  '{key}': {start}{old}{end}',\n", f"  '{key}': {start}{new}{end}',\n")
+      for key, start, old, new, end in (
+          ("Message.Unsupported.Desktop", _UNSUPPORTED, "[getdesktop.telegram.org](https://getdesktop.telegram.org/)",
+           "[pluma.chat](https://pluma.chat/)", "__"),
+          ("Message.Unsupported.Mobile", _UNSUPPORTED, "[telegram.org/dl](https://telegram.org/dl/)",
+           "[pluma.chat](https://pluma.chat/)", "__"),
+          ("Video.Unsupported.Desktop", _UNPLAYABLE, "[desktop app](https://getdesktop.telegram.org/)",
+           "[desktop app](https://pluma.chat/)", " instead.__"),
+          ("Video.Unsupported.Mobile", _UNPLAYABLE, "[mobile app](https://telegram.org/dl/)",
+           "[mobile app](https://pluma.chat/)", " instead.__"),
+      )),
     ("src/lang.ts",
      "'ChatList.Main.EmptyPlaceholder.SubtitleNoContacts': 'Use Telegram app on your "
      "[Android](https://telegram.org/android) or [iOS](https://telegram.org/dl/ios) device to sync your contacts',\n",
@@ -1974,6 +1992,10 @@ def patch(tree, c):
     # A release of the site reaches open tabs.
     update_prompts(tree, c)
 
+    # What was left of Telegram's palette and English.
+    palette(tree)
+    strings(tree)
+
 
 def verify(tree, c):
     """Checks the result independently of how the edits were made."""
@@ -2117,6 +2139,8 @@ def verify(tree, c):
     verify_help_section(sources)
     verify_login_code_screens(sources)
     verify_update_prompts(tree, c, sources)
+    verify_palette(sources)
+    verify_strings(sources)
 
 
 
@@ -3773,6 +3797,9 @@ CALL_PLATE = "src/scss/partials/_chatPinned.scss"
 CALL_WEAVE = "src/components/topbarWeave.ts"
 CALL_SANDBOX = "src/components/popupSandbox/stories/calls.ts"
 _SAGE = "(task 017 of the server)"
+# The dark theme's colours, which the call's screens take (call/index.tsx and groupCall/index.tsx give them the
+# class night).
+_NIGHT = {key: new for key, _, new in THEME_COLORS["night"]}
 # The group call's state texts (--gc-green/blue/red-text-color) are also read outside calls: by polls, a right
 # and a wrong answer (chat/bubbleParts/pollMessageContent/styles.module.scss 280-349), and by the markup's diff
 # (scss/partials/_markup.scss 110, 115). The root keeps Telegram's (base.scss 300-302); the sage ones are
@@ -3837,7 +3864,8 @@ CALL_COLOR_EDITS = (
      "  --gc-red-color: #7A4E3B;\n"
      "\n"
      "  --gc-primary-text-color: #fff;\n"
-     "  --gc-secondary-text-color: #aaaaaa;\n"
+     "  // pluma: the dark theme's secondary text (THEME_COLORS)\n"
+     f"  --gc-secondary-text-color: {_NIGHT['secondary-text-color'].upper()};\n"
      "  // pluma: polls and the markup's diff read these too, so they keep Telegram's; the call's screens take\n"
      "  // the sage ones below instead (CALL_TEXT_SCOPES)\n"
      + CALL_TEXT_OUTSIDE +
@@ -3847,6 +3875,21 @@ CALL_COLOR_EDITS = (
      "  --gc-call-blue-text-color: #7FA082;\n"
      "  --gc-call-red-text-color: #B97A55;\n"),
     *CALL_TEXT_SCOPES,
+    # The group call's panel and its tiles are Telegram's dark greys: the panel the night theme's background, which
+    # the participants' section, the theme's surface, stands out of (base.scss 282-285). Pluma's dark theme has its
+    # own (THEME_COLORS): its surface is darker than Telegram's background, so on Telegram's panel the section sank
+    # into it. A tile without video (_groupCall.scss 261) takes the dark theme's message background.
+    ("src/scss/base.scss",
+     "  // a popup's background (--background-color at night): the participants' section stands out of it\n"
+     "  // as a popup's sections do\n"
+     "  --gc-background-color: #181818;\n",
+     "  // a popup's background (--background-color at night): the participants' section stands out of it\n"
+     "  // as a popup's sections do (pluma: the dark theme's, THEME_COLORS)\n"
+     f"  --gc-background-color: {_NIGHT['background-color'].upper()};\n"),
+    ("src/scss/base.scss",
+     "  --gc-tile-background: #2c2c2e;\n",
+     "  // pluma: the dark theme's message background (THEME_COLORS)\n"
+     f"  --gc-tile-background: {_NIGHT['message-background-color'].upper()};\n"),
     # The participants' and the microphone's lottie colours read the root's custom properties
     # (helpers/dom/customProperties.ts reads getComputedStyle(document.documentElement)), not the call's screen.
     (GROUP_CALL_POPUP,
@@ -3951,14 +3994,15 @@ CALL_COLOR_EDITS = (
 
 # Telegram's colours of calls, as the places above had them. Most are found nowhere else in the client and must
 # be gone from every source; a few are also colours of something else (the accent, the danger and green of a
-# theme, Premium's gradient, a sticker's outline) and must be gone from the call's own files, from the --gc-*
-# colours and from the call's plate.
+# theme, Premium's gradient, a sticker's outline, the greys of Telegram's dark theme) and must be gone from the
+# call's own files, from the --gc-* colours and from the call's plate.
 TELEGRAM_CALL_COLORS = (
     "568fd6", "626ed5", "a667d5", "7664da", "acbd65", "459f8d", "53a4d1", "3e917a", "c0508d", "f09536", "ce5081",
     "fc7c4c", "195530", "3c87f7", "643333", "00a3b4", "00cb47", "4eabf8", "3478f6", "df44b8", "3851eb", "0976e3",
     "2bceff", "52ce5d", "00b1c0", "f05459", "766ee9", "57a4fe", "8599aa", "54b655", "4d9f4c",
 )
-TELEGRAM_CALL_COLORS_SHARED = ("5cc85e", "3390ec", "ff595a", "4588e3", "976fff", "e46ace")
+TELEGRAM_CALL_COLORS_SHARED = ("5cc85e", "3390ec", "ff595a", "4588e3", "976fff", "e46ace", "181818", "aaaaaa",
+                               "2c2c2e")
 TELEGRAM_CALL_TINTS = ("100, 50, 50", "27, 66, 42", "38, 53, 76", "71, 40, 63")
 # The buttons that keep Telegram's colours, each exactly as the edits above leave it and only there: Leave of a
 # group call (groupCall/index.tsx 664-668 makes it .group-call-button-red, _groupCall.scss 139-141 paints it
@@ -6990,6 +7034,188 @@ def verify_paths(sources):
     for m in _PATH_LOG_CALL.finditer(PATH_SELECTOR_TS):
         if _PATH_LOG_SECRET.search(m.group(1)):
             raise PatchError(f"{PATH_SELECTOR}: a log line names {_PATH_LOG_SECRET.search(m.group(1)).group()!r}")
+
+
+# --- what was left of Telegram's palette and English (task 118 of the server) ----
+#
+# Places outside calls that still drew Telegram's blues and greys, and screens
+# whose strings were English literals, not the language pack's: the audit of
+# task 118 of the server (2026-11-21). The rest of the client takes its
+# colours from the theme (THEME_COLORS) and its strings from lang.ts, which
+# the server's language pack overrides (langPack.ts getLangPackAndApply).
+
+# The dark theme's accent: links on a toast and on a caption of the media
+# viewer, which are always dark, and the paid messages' Undo on a toast.
+_NIGHT_ACCENT = _NIGHT["primary-color"].upper()
+_ACCENT_RGB = ", ".join(str(int(_NIGHT_ACCENT[i:i + 2], 16)) for i in (1, 3, 5))
+_STORY_GRADIENT = "linear-gradient(225deg, var(--avatar-color-story-unread-from), var(--avatar-color-story-unread-to))"
+_BLUE = {key: new for key, _, new in IDENTITY_COLORS["blue"]}
+
+# (file, upstream's, Pluma's)
+PALETTE_EDITS = (
+    # A link on a toast (base.scss .toast a): Telegram's light blue.
+    ("src/scss/base.scss",
+     "  a {\n    color: #60a5e9!important;\n    cursor: pointer;\n  }\n",
+     f"  a {{\n    color: {_NIGHT_ACCENT}!important; // pluma: the dark theme's accent, as a toast is dark\n"
+     "    cursor: pointer;\n  }\n"),
+    # A link in a caption of the media viewer.
+    ("src/components/mediaViewer/mediaViewer.scss",
+     "    --link-color: #60a5e9 !important;\n",
+     f"    --link-color: {_NIGHT_ACCENT} !important; // pluma: the dark theme's accent, as the viewer is dark\n"),
+    # The icon of the stories' feature popups (stealth mode, quality): the
+    # story ring's gradient, which rebrand makes sage.
+    ("src/components/featureDetailsIconSticker.module.scss",
+     "    background: linear-gradient(225deg, #34C76F, #3DA1FD);\n",
+     f"    background: {_STORY_GRADIENT}; // pluma: the story ring's\n"),
+    # Who sees a story: Everyone is blue, the blue identity's gradient, sage
+    # (IDENTITY_COLORS); the other audiences keep their colours, as the other
+    # identities do.
+    ("src/scss/base.scss",
+     "  &-public {\n    --gradient-colors: #50ABFF, #007AFF;\n  }\n",
+     f"  &-public {{\n    --gradient-colors: {_BLUE['avatar top']}, {_BLUE['avatar bottom']}; // pluma: the blue identity's\n"
+     "  }\n"),
+    # Undo of a paid reaction and of a paid message whose price changed.
+    ("src/scss/partials/_reactions.scss",
+     "    color: #8EDEFF;\n",
+     f"    color: {_NIGHT_ACCENT}; // pluma: the dark theme's accent, on a dark toast\n"),
+    ("src/components/chat/priceChangedInterceptor/priceChangedTooltip.module.scss",
+     "  color: rgb(142, 222, 255);\n\n  @include hover-global(rgba(142, 222, 255, 0.075), background-color, false);\n",
+     f"  // pluma: the dark theme's accent, on a dark toast\n  color: rgb({_ACCENT_RGB});\n\n"
+     f"  @include hover-global(rgba({_ACCENT_RGB}, 0.075), background-color, false);\n"),
+    # The border of a search field of the light theme: the theme's border.
+    ("src/scss/base.scss",
+     "  --input-search-border-color: #dfe1e5;\n",
+     "  --input-search-border-color: " + dict((k, new) for k, _, new in THEME_COLORS["day"])["border-color"]
+     + "; // pluma: the theme's border\n"),
+)
+# Telegram's colours the edits above take away, gone from every source: a
+# CSS colour, a number or an rgb() triple.
+TELEGRAM_PALETTE_LEFT = ("60a5e9", "8edeff", "50abff", "34c76f", "3da1fd")
+_TELEGRAM_PALETTE_LEFT = re.compile(r"(?<![0-9A-Fa-f])(?:" + "|".join(TELEGRAM_PALETTE_LEFT) + r")(?![0-9A-Fa-f])"
+                                    r"|rgba?\(142, 222, 255\b", re.IGNORECASE)
+
+
+def palette(tree):
+    for rel, old, new in PALETTE_EDITS:
+        tree.replace(rel, old, new)
+
+
+def verify_palette(sources):
+    for rel, old, new in PALETTE_EDITS:
+        if sources[rel].count(new) != 1 or old in sources[rel]:
+            raise PatchError(f"{rel}: Telegram's colour is back where Pluma's palette was put")
+    for rel, text in sources.items():
+        m = _TELEGRAM_PALETTE_LEFT.search(text)
+        if m:
+            raise PatchError(f"{rel}: Telegram's colour {m.group()!r} is still there")
+
+
+# Strings that upstream writes in English on the screen, never translated:
+# each takes a key of the language pack instead. A key of upstream where its
+# words are the same; otherwise a Pluma key of lang.ts (PLUMA_STRINGS), which
+# the server's language pack translates (pkg/langpack, own.json and
+# patchkeys.json of webk). (file, upstream's, Pluma's)
+SEND_NOW = "src/components/popups/sendNow.ts"
+MEDIA_PLAYER = "src/lib/mediaPlayer/index.ts"
+BROWSER = "src/components/browser.tsx"
+GENERAL_SETTINGS = "src/components/sidebarLeft/tabs/generalSettings.tsx"
+NEW_GROUP = "src/components/sidebarLeft/tabs/newGroup.tsx"
+STRING_EDITS = (
+    # Scheduled messages, Send Now of a message's menu and of the selection
+    # (chat/contextMenu.ts, chat/selection.ts): the confirmation.
+    (SEND_NOW,
+     "    title: `Send Message${mids.length > 1 ? 's' : ''} Now`,\n"
+     "    description: mids.length > 1 ? 'Send ' + mids.length + ' messages now?' : 'Send message now?',\n",
+     "    // pluma: the language pack's strings, not English\n"
+     "    titleLangKey: 'MessageScheduleSend',\n"
+     "    descriptionLangKey: mids.length > 1 ? 'Pluma.Scheduled.SendNow.Many' : 'Pluma.Scheduled.SendNow.One',\n"
+     "    descriptionLangArgs: [mids.length],\n"),
+    # The full-screen button of the video player: its tooltip, the words of
+    # a call's full-screen button.
+    (MEDIA_PLAYER, "import {i18n} from '@lib/langPack';\n", "import I18n, {i18n} from '@lib/langPack';\n"),
+    (MEDIA_PLAYER, "      fullScreenButton.setAttribute('title', 'Full Screen');\n",
+     "      fullScreenButton.setAttribute('title', I18n.format('Call.Fullscreen.Enter', true)); // pluma\n"),
+    (MEDIA_PLAYER, "      fullScreenButton.setAttribute('title', 'Exit Full Screen');\n",
+     "      fullScreenButton.setAttribute('title', I18n.format('Call.Fullscreen.Exit', true)); // pluma\n"),
+    # The browser of mini apps: the tab of the apps' catalog, and the tab of
+    # an Instant View page without a title.
+    (BROWSER, "      title: 'Open App',\n", "      title: I18n.format('MiniApps.OpenApp', true), // pluma\n"),
+    (BROWSER, "          return /* webPage().site_name ||  */'Instant View';\n",
+     "          return /* webPage().site_name ||  */I18n.format('Pluma.InstantView', true); // pluma\n"),
+    # Settings, General: the tooltip of the default accent.
+    (GENERAL_SETTINGS, '          title="Default"\n',
+     "          title={I18n.format('CallSettings.DeviceDefault', true)}\n"),
+    # A new group with a location: the errors of the location, and the
+    # address in the app's language, not always in English.
+    (NEW_GROUP, "      uri += '&accept-language=en';\n",
+     "      // pluma: the address in the app's language\n"
+     "      uri += '&accept-language=' + encodeURIComponent(I18n.getLastRequestedLangCode() || 'en');\n"),
+    (NEW_GROUP,
+     "        groupLocationInputField.setValueSilently('Location permission denied. Please retry later.');\n"
+     "      } else {\n"
+     "        groupLocationInputField.setValueSilently('An error has occurred. Please retry later.');\n",
+     "        groupLocationInputField.setValueSilently(I18n.format('Pluma.Location.PermissionDenied', true));\n"
+     "      } else {\n"
+     "        groupLocationInputField.setValueSilently(I18n.format('Error.AnError', true));\n"),
+)
+# What the edits rely on: the files import I18n, and the keys of upstream
+# they take are there with the words they had (lang.ts).
+STRING_RELIES_ON = (
+    (BROWSER, "import I18n, {i18n} from '@lib/langPack';\n"),
+    (GENERAL_SETTINGS, "import I18n from '@lib/langPack';\n"),
+    (NEW_GROUP, "import I18n, {i18n} from '@lib/langPack';\n"),
+    ("src/lang.ts", "  'MessageScheduleSend': 'Send Now',\n"),
+    ("src/lang.ts", "  'Call.Fullscreen.Enter': 'Enter full screen',\n"),
+    ("src/lang.ts", "  'Call.Fullscreen.Exit': 'Exit full screen',\n"),
+    ("src/lang.ts", "  'MiniApps.OpenApp': 'Open App',\n"),
+    ("src/lang.ts", "  'CallSettings.DeviceDefault': 'Default',\n"),
+    ("src/lang.ts", "  'Error.AnError': 'An error occurred. Please try again later.',\n"),
+)
+# The English of Pluma's keys, after the upstream key each follows in
+# lang.ts: (anchor, lines).
+# The server's language pack serves Pluma's own keys as plain strings, never
+# plural ones (pkg/langpack own.json), so a key with a count is plain here
+# too: Pluma.Scheduled.SendNow.Many is only asked for two messages or more.
+PLUMA_STRINGS = (
+    ("  'MessageScheduleSend': 'Send Now',\n",
+     "  'Pluma.Scheduled.SendNow.One': 'Send message now?',\n"
+     "  'Pluma.Scheduled.SendNow.Many': 'Send %d messages now?',\n"),
+    ("  'WebPage.InstantView': 'INSTANT VIEW',\n",
+     "  'Pluma.InstantView': 'Instant View',\n"),
+    ("  'AttachLocation': 'Location',\n",
+     "  'Pluma.Location.PermissionDenied': 'Location permission denied. Please retry later.',\n"),
+)
+# The English left on these screens: none of it may come back.
+_ENGLISH_LEFT = (
+    (SEND_NOW, re.compile(r"Send Message|messages now\?|message now\?")),
+    (MEDIA_PLAYER, re.compile(r"'(?:Exit )?Full Screen'")),
+    (BROWSER, re.compile(r"'Open App'|'Instant View'")),
+    (GENERAL_SETTINGS, re.compile(r'title="Default"')),
+    (NEW_GROUP, re.compile(r"accept-language=en|Please retry later")),
+)
+
+
+def strings(tree):
+    for rel, text in STRING_RELIES_ON:
+        tree.expect(rel, text)
+    for rel, old, new in STRING_EDITS:
+        tree.replace(rel, old, new)
+    for anchor, lines in PLUMA_STRINGS:
+        tree.replace("src/lang.ts", anchor, anchor + lines)
+
+
+def verify_strings(sources):
+    for rel, old, new in STRING_EDITS:
+        if sources[rel].count(new) != 1 or old in sources[rel]:
+            raise PatchError(f"{rel}: a string of the screen is English again, not the language pack's")
+    for rel, english in _ENGLISH_LEFT:
+        m = english.search(sources[rel])
+        if m:
+            raise PatchError(f"{rel}: {m.group()!r} is English on the screen, not the language pack's")
+    lang = sources["src/lang.ts"]
+    for anchor, lines in PLUMA_STRINGS:
+        if lang.count(anchor + lines) != 1:
+            raise PatchError(f"src/lang.ts: {lines.strip()[:60]!r} is not there once")
 
 
 def main(argv=None):

@@ -750,6 +750,14 @@ DAMAGE = (
     # The paths to the server: each edit, and what the edits rely on.
     *((rel, old, damaged(old)) for rel, old, _ in patch.PATH_EDITS),
     *((rel, text, damaged(text)) for rel, text in patch.PATH_RELIES_ON),
+    # Telegram's site off the screens: each edit.
+    *((rel, old, damaged(old)) for rel, old, _ in patch.TELEGRAM_SITE_EDITS),
+    # What was left of Telegram's palette and English: each edit, what the
+    # edits rely on, and the places of Pluma's strings.
+    *((rel, old, damaged(old)) for rel, old, _ in patch.PALETTE_EDITS),
+    *((rel, old, damaged(old)) for rel, old, _ in patch.STRING_EDITS),
+    *((rel, text, damaged(text)) for rel, text in patch.STRING_RELIES_ON),
+    *(("src/lang.ts", anchor, damaged(anchor)) for anchor, _ in patch.PLUMA_STRINGS),
 )
 
 
@@ -1171,6 +1179,16 @@ class UpstreamTest(unittest.TestCase):
         automation = tree.read("src/components/sidebarLeft/tabs/chatAutomation.tsx")
         self.assertNotIn("telegram.org", automation)
         self.assertNotIn("learnMoreAnchor", automation)
+        # A message or a video the browser cannot show sends the user to
+        # Pluma's site, not to Telegram's apps.
+        for key in ("Message.Unsupported.Desktop", "Message.Unsupported.Mobile", "Video.Unsupported.Desktop",
+                    "Video.Unsupported.Mobile"):
+            with self.subTest(key=key):
+                line = next(line for line in lang.split("\n") if line.startswith(f"  '{key}': "))
+                self.assertIn("(https://pluma.chat/)", line)
+                self.assertIn("Pluma Web", line)
+                self.assertNotIn("telegram.org", line)
+        self.assertIn("Try [pluma.chat](https://pluma.chat/)__',", lang)
 
     def test_premium_stickers(self):
         tree, _ = self.run_patch()
@@ -1608,7 +1626,11 @@ class UpstreamTest(unittest.TestCase):
         base = tree.read("src/scss/base.scss")
         for line in ("  --gc-button-unmuted-color: rgba(79, 110, 82, .92);\n", "  --gc-call-green-text-color: #9DBB9F;\n",
                      "  --gc-call-blue-text-color: #7FA082;\n", "  --gc-call-red-text-color: #B97A55;\n",
-                     "  --gc-microphone-unmuted-from: #5B7A5E;\n", "  --gc-microphone-hand-to: #2C3A2D;\n"):
+                     "  --gc-microphone-unmuted-from: #5B7A5E;\n", "  --gc-microphone-hand-to: #2C3A2D;\n",
+                     # The panel is the dark theme's background, so its surface, the participants' section,
+                     # stands out of it; the secondary text and a tile without video are the theme's too.
+                     "  --gc-background-color: #0C0E0C;\n", "  --gc-secondary-text-color: #9AA29A;\n",
+                     "  --gc-tile-background: #232623;\n"):
             with self.subTest(line=line):
                 self.assertIn(line, base)
         # The state texts are sage inside the call's screens only: the root keeps Telegram's, which polls and the
@@ -1645,7 +1667,8 @@ class UpstreamTest(unittest.TestCase):
         # colours (white, black, greys, the theme's own) are no colour of Telegram's calls.
         sage = {"3a4a3c", "4f6e52", "2c3a2d", "5b7a5e", "6f8f72", "7fa082", "8a5a44", "a86b4c", "7a4e3b", "b97a55",
                 "9dbb9f"}
-        neutral = {"aaaaaa"}  # the secondary text, a grey of the group call that stays
+        # The panel, its secondary text and a tile without video: the dark theme's greys.
+        neutral = {"0c0e0c", "9aa29a", "232623"}
         for rel, _, new in patch.CALL_COLOR_EDITS:
             for r, kept in patch.CALL_BUTTONS + (("src/scss/base.scss", patch.CALL_TEXT_OUTSIDE),):
                 if r == rel:
@@ -1668,14 +1691,22 @@ class UpstreamTest(unittest.TestCase):
              "_groupCall.scss: Telegram's call colour 'rgba(27, 66, 42,' is still there"),
             ("src/components/call/settingsPopup.scss", "\n", "\n.x { color: #3390EC; }\n",
              "settingsPopup.scss: Telegram's call colour '3390EC' is still there"),
-            ("src/scss/base.scss", "  --gc-tile-background: #2c2c2e;\n",
-             "  --gc-tile-background: #2c2c2e;\n  --gc-link-color: #3390ec;\n",
+            ("src/scss/base.scss", "  --gc-tile-background: #232623;\n",
+             "  --gc-tile-background: #232623;\n  --gc-link-color: #3390ec;\n",
              "base.scss: Telegram's call colour '3390ec' is still there"),
             ("src/components/wallet/visual/card/background.ts", "\n", "\nconst glow = '#4EABF8';\n",
              "background.ts: Telegram's call colour '4EABF8' is still there"),
+            # Telegram's dark greys of the group call.
+            ("src/scss/base.scss", "  --gc-background-color: #0C0E0C;\n", "  --gc-background-color: #181818;\n",
+             "base.scss: the call is not in the sage palette"),
+            ("src/scss/base.scss", "  --gc-tile-background: #232623;\n",
+             "  --gc-tile-background: #232623;\n  --gc-tile-border-color: #2c2c2e;\n",
+             "base.scss: Telegram's call colour '2c2c2e' is still there"),
+            ("src/scss/partials/popups/_groupCall.scss", "\n", "\n.x { color: #aaaaaa; }\n",
+             "_groupCall.scss: Telegram's call colour 'aaaaaa' is still there"),
             # The buttons' colours anywhere but their buttons; a button that lost its colour.
-            ("src/scss/base.scss", "  --gc-tile-background: #2c2c2e;\n",
-             "  --gc-tile-background: #2c2c2e;\n  --gc-alert-color: rgba(100, 50, 50, 1);\n",
+            ("src/scss/base.scss", "  --gc-tile-background: #232623;\n",
+             "  --gc-tile-background: #232623;\n  --gc-alert-color: rgba(100, 50, 50, 1);\n",
              "base.scss: Telegram's call colour 'rgba(100, 50, 50,' is still there"),
             (patch.CALL_POPUP, "\n", "\n.x { color: #5CC85E; }\n",
              "_call.scss: Telegram's call colour '5CC85E' is still there"),
@@ -1690,8 +1721,8 @@ class UpstreamTest(unittest.TestCase):
             # set again elsewhere; the sage ones read by polls.
             ("src/scss/base.scss", "  --gc-green-text-color: #5CC85E;\n", "  --gc-green-text-color: #9DBB9F;\n",
              "base.scss: the root's --gc-*-text-color, which polls and the markup read, do not keep Telegram's"),
-            ("src/scss/base.scss", "  --gc-tile-background: #2c2c2e;\n",
-             "  --gc-tile-background: #2c2c2e;\n  --gc-red-text-color: var(--gc-call-red-text-color);\n",
+            ("src/scss/base.scss", "  --gc-tile-background: #232623;\n",
+             "  --gc-tile-background: #232623;\n  --gc-red-text-color: var(--gc-call-red-text-color);\n",
              "base.scss: the call's state texts are set or read outside a call's screen"),
             ("src/components/chat/bubbleParts/pollMessageContent/styles.module.scss",
              "background-color: var(--gc-green-text-color);", "background-color: var(--gc-call-green-text-color);",
@@ -1709,6 +1740,96 @@ class UpstreamTest(unittest.TestCase):
         rel = "src/components/wallet/wallet.module.scss"
         self.assertIn("3390ec", sources[rel].lower())
         patch.verify_call_colors(sources)
+
+    def test_palette(self):
+        tree, c = self.run_patch()
+        # Links on a toast and in the media viewer, Undo of a paid reaction and of a changed price: the dark
+        # theme's accent, as these are always dark.
+        self.assertIn("  a {\n    color: #9DBB9F!important;", tree.read("src/scss/base.scss"))
+        self.assertIn("    --link-color: #9DBB9F !important;", tree.read("src/components/mediaViewer/mediaViewer.scss"))
+        self.assertIn("    color: #9DBB9F;", tree.read("src/scss/partials/_reactions.scss"))
+        price = tree.read("src/components/chat/priceChangedInterceptor/priceChangedTooltip.module.scss")
+        self.assertIn("  color: rgb(157, 187, 159);\n", price)
+        self.assertIn("rgba(157, 187, 159, 0.075)", price)
+        # The stories' feature icon is the story ring's sage, Everyone of a story's audience the blue identity's.
+        self.assertIn("var(--avatar-color-story-unread-from), var(--avatar-color-story-unread-to)",
+                      tree.read(FEATURE_ICON))
+        self.assertIn("  --avatar-color-story-unread-from: #9DBB9F;", tree.read(BASE))
+        self.assertIn("  &-public {\n    --gradient-colors: #7FA082, #5B7A5E;", tree.read(BASE))
+        self.assertIn("  &-close {\n    --gradient-colors: #88D93A, #30B73B;", tree.read(BASE))
+        self.assertIn("  --input-search-border-color: #dfe2df;", tree.read(BASE))
+        # The dark theme keeps its own search border.
+        self.assertIn("  --input-search-border-color: #2f2f2f;", tree.read(BASE))
+
+        sources = {rel: tree.read(rel) for rel in tree.sources()}
+        patch.verify_palette(sources)
+        for rel, old, new, error in (
+            (BASE, "    color: #9DBB9F!important;", "    color: #60a5e9!important;",
+             "base.scss: Telegram's colour is back"),
+            ("src/components/stories/viewer.tsx", "\n", "\nconst link = '#60A5E9';\n",
+             "viewer.tsx: Telegram's colour '60A5E9' is still there"),
+            ("src/scss/partials/_chat.scss", "\n", "\n.x { color: rgba(142, 222, 255, .5); }\n",
+             "_chat.scss: Telegram's colour 'rgba(142, 222, 255' is still there"),
+            ("src/components/popups/storySettings.tsx", "\n", "\nconst ring = ['#34C76F', '#3DA1FD'];\n",
+             "storySettings.tsx: Telegram's colour '34C76F' is still there"),
+        ):
+            with self.subTest(error=error):
+                self.assertIn(old, sources[rel])
+                changed = dict(sources, **{rel: sources[rel].replace(old, new, 1)})
+                with self.assertRaisesRegex(patch.PatchError, re.escape(error)):
+                    patch.verify_palette(changed)
+
+    def test_strings(self):
+        tree, c = self.run_patch()
+        # Send Now of a scheduled message: the language pack's title and question, one form for one message and
+        # one, plain as the server's own strings are, for several.
+        send_now = tree.read(patch.SEND_NOW)
+        self.assertIn("    titleLangKey: 'MessageScheduleSend',\n", send_now)
+        self.assertIn("    descriptionLangArgs: [mids.length],\n", send_now)
+        self.assertNotIn("title:", send_now)
+        self.assertNotIn("description:", send_now)
+        lang = tree.read("src/lang.ts")
+        self.assertIn("  'MessageScheduleSend': 'Send Now',\n  'Pluma.Scheduled.SendNow.One': 'Send message now?',\n"
+                      "  'Pluma.Scheduled.SendNow.Many': 'Send %d messages now?',\n", lang)
+        self.assertIn("  'Pluma.InstantView': 'Instant View',\n", lang)
+        self.assertIn("  'Pluma.Location.PermissionDenied': 'Location permission denied. Please retry later.',\n", lang)
+        # Every Pluma key a patched source asks is one lang.ts or langSign.ts has.
+        keys = set(re.findall(r"^  '(Pluma[\w.]+)':", lang + tree.read(patch.LANG_SIGN), re.MULTILINE))
+        for rel in tree.sources():
+            if rel in ("src/lang.ts", patch.LANG_SIGN):
+                continue
+            for key in re.findall(r"['\"](Pluma(?:Call)?\.[\w.]+)['\"]", tree.read(rel)):
+                with self.subTest(rel=rel, key=key):
+                    self.assertIn(key, keys)
+        player = tree.read(patch.MEDIA_PLAYER)
+        self.assertIn("I18n.format('Call.Fullscreen.Enter', true)", player)
+        self.assertIn("I18n.format('Call.Fullscreen.Exit', true)", player)
+        browser = tree.read(patch.BROWSER)
+        self.assertIn("title: I18n.format('MiniApps.OpenApp', true)", browser)
+        self.assertIn("I18n.format('Pluma.InstantView', true)", browser)
+        self.assertIn("title={I18n.format('CallSettings.DeviceDefault', true)}", tree.read(patch.GENERAL_SETTINGS))
+        group = tree.read(patch.NEW_GROUP)
+        self.assertIn("encodeURIComponent(I18n.getLastRequestedLangCode() || 'en')", group)
+        self.assertIn("I18n.format('Pluma.Location.PermissionDenied', true)", group)
+        self.assertIn("I18n.format('Error.AnError', true)", group)
+
+        sources = {rel: tree.read(rel) for rel in tree.sources()}
+        patch.verify_strings(sources)
+        for rel, old, new, error in (
+            (patch.MEDIA_PLAYER, "I18n.format('Call.Fullscreen.Exit', true)", "'Exit Full Screen'",
+             "index.ts: a string of the screen is English again"),
+            (patch.SEND_NOW, "\n", "\n// Send message now?\n",
+             "sendNow.ts: 'message now?' is English on the screen"),
+            (patch.BROWSER, "\n", "\nconst tab = {title: 'Open App'};\n",
+             "browser.tsx: \"'Open App'\" is English on the screen"),
+            ("src/lang.ts", "  'Pluma.InstantView': 'Instant View',\n", "",
+             "lang.ts: \"'Pluma.InstantView': 'Instant View',\" is not there once"),
+        ):
+            with self.subTest(error=error):
+                self.assertIn(old, sources[rel])
+                changed = dict(sources, **{rel: sources[rel].replace(old, new, 1)})
+                with self.assertRaisesRegex(patch.PatchError, re.escape(error)):
+                    patch.verify_strings(changed)
 
     def test_transcription(self):
         tree, c = self.run_patch()
